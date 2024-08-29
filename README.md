@@ -42,11 +42,14 @@ pip install -r requirements.txt
   "spotify": {
     "client_id": "your_client_id_here",
     "client_secret": "your_client_secret_here",
-    "redirect_uri": "your_callback_url_here",
+    "redirect_uri": "[your_callback_url_here](http://localhost:8888/callback)",
     "device_name": "your_device_name_here"
   }
 }
 ```
+
+For the client id and secret, you need to creater a basic app [here](https://developer.spotify.com/dashboard), you will see them in the settings of your app name then.
+The device name is not mandatory but it is better to use it, if not, the app will not know which device to use unless you first start a music manually.
 
 ### 3. Build the Executable
 
