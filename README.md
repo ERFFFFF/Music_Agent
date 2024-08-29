@@ -69,7 +69,7 @@ If you're using PowerShell, use the following command inside the repository fold
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data=".\config.json;." --name "Music Agent" main.py; Copy-Item -Path ".\dist\Music Agent.exe" -Destination "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
 ```
 
-Or this one to not put eh exe inside the startup folder :
+Or this one if you do not want to put the .exe inside the startup folder :
 
 ```powershell
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build; Remove-Item -Force -ErrorAction SilentlyContinue main.spec; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data=".\config.json;." --name "Music Agent" main.py
