@@ -1,4 +1,9 @@
 
+# Tags
+
+![Python](https://img.shields.io/badge/python-3.10.5-blue.svg)
+![PyPI version](https://badge.fury.io/py/pip.svg)
+
 # Music Control Agent
 
 A lightweight Spotify agent that enables you to control your Spotify playback with customizable keybinds. Easily skip tracks, pause, play, like, unlike, or go back to the previous song with simple keyboard shortcuts.
