@@ -118,56 +118,23 @@ except Exception as e:
     sys.exit(1)
 
 
-# Device control functions
-def list_devices():
-    """Retrieve and list all devices available under the user's account."""
-    try:
-        devices = rate_limited_spotify_call(sp.devices)
-        print("devices: ", devices)
-        if not devices["devices"]:
-            print("toto")
-            logging.info("No devices found.")
-            return []
-        logging.info("Available devices:")
-        for device in devices["devices"]:
-            logging.info(
-                f"Name: {device['name']}, Type: {device['type']}, ID: {device['id']}"
-            )
-        return devices["devices"]
-    except Exception as e:
-        logging.error(f"Error retrieving devices: {e}", exc_info=True)
-        return []
-
-
-def find_device_by_name(device_name):
-    """Find a device by name and return its ID."""
-    devices = list_devices()
-    for device in devices:
-        if device["name"].lower() == device_name.lower():
-            logging.info(f"Device found: {device['name']} with ID {device['id']}")
-            return device["id"]
-    logging.warning(f"No device found with the name {device_name}")
-    return None
-
-
-def transfer_playback_to_device_by_name(device_name):
+def transfer_playback_to_device_by_id(device_id):
     """Transfer playback to the device with the specified name."""
-    device_id = find_device_by_name(device_name)
-    if device_id:
-        try:
-            rate_limited_spotify_call(
-                sp.transfer_playback, device_id=device_id, force_play=False
-            )
-            logging.info(f"Playback transferred to {device_name} (ID: {device_id})")
-        except Exception as e:
-            logging.error(
-                f"Failed to transfer playback to {device_name}: {e}", exc_info=True
-            )
-    else:
-        logging.error("Failed to find device or transfer playback.")
+    devices = rate_limited_spotify_call(sp.devices)
+    print(devices)
+    logging.info(f"List of available devices: {devices}")
+    try:
+        rate_limited_spotify_call(
+            sp.transfer_playback, device_id=device_id, force_play=False
+        )
+        logging.info(f"Playback transferred to {device_id}")
+        print("Device successfully connected")
+    except Exception as e:
+        logging.error(f"Failed to transfer playback to {device_id}: {e}", exc_info=True)
+        print("The default device couldn't connect")
 
 
-transfer_playback_to_device_by_name(spotify_config["device_name"])
+transfer_playback_to_device_by_id(spotify_config["device_id"])
 
 
 # Define playback control functions
