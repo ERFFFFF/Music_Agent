@@ -42,7 +42,7 @@ pip install -r requirements.txt
   "spotify": {
     "client_id": "your_client_id_here",
     "client_secret": "your_client_secret_here",
-    "redirect_uri": "[your_callback_url_here](http://localhost:8888/callback)",
+    "redirect_uri": "http://localhost:8888/callback",
     "device_name": "your_device_name_here"
   }
 }
