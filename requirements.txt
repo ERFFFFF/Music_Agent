@@ -1,0 +1,5 @@
+spotipy
+keyboard
+pyinstaller
+appdirs
+ratelimit

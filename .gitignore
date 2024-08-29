@@ -1,0 +1,12 @@
+# Ignore all .cache files
+.cache
+
+# Ignore specific config file
+config.json
+
+# Exclude exe generation files
+main.spec
+/dist/
+/build/
+Music Agent.spec
+music_agent_control.log
