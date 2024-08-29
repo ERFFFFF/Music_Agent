@@ -48,7 +48,8 @@ pip install -r requirements.txt
 }
 ```
 
-For the client id and secret, you need to creater a basic app [here](https://developer.spotify.com/dashboard), you will see them in the settings of your app name then.\n
+For the client id and secret, you need to creater a basic app [here](https://developer.spotify.com/dashboard), you will see them in the settings of your app name then.
+
 [IN PROGRESS] I try to forcefully connect to a device not listed in the active device.I don't know if its possible, but i'm trying to make it so that we can wake up a dormant device.
 
 ### 3. Build the Executable
