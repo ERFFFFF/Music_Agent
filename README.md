@@ -48,32 +48,26 @@ pip install -r requirements.txt
 }
 ```
 
+To know your device id, you can simply run the discover_device_id.py
+
 For the client id and secret, you need to creater a basic app [here](https://developer.spotify.com/dashboard), you will see them in the settings of your app name then.
 
 [IN PROGRESS] I try to forcefully connect to a device not listed in the active device.I don't know if its possible, but i'm trying to make it so that we can wake up a dormant device.
 
 ### 3. Build the Executable
 
-#### For Command Prompt (CMD)
+#### In PowerShell
 
-To remove old files and create a new executable:
-
-```cmd
-rmdir /s /q dist && rmdir /s /q build && del /q main.spec && pyinstaller --onefile --noconsole --icon=poulet.ico --add-data=".\config.json;." --name "Spotify Agent" main.py && echo Script completed. Please manually create a shortcut in the Startup folder.
-```
-
-#### For PowerShell
-
-If you're using PowerShell, use the following command inside the repository folder :
+Using PowerShell, type the following command inside the repository folder :
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.exe"; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data=".\config.json;." --name "Music Agent" main.py; Copy-Item -Path ".\dist\Music Agent.exe" -Destination "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.exe"; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data ".\config.json;." --name "Music Agent" main.py; Copy-Item -Path ".\dist\Music Agent.exe" -Destination "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
 Or this one if you do not want to put the .exe inside the startup folder :
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue build; Remove-Item -Force -ErrorAction SilentlyContinue main.spec; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data=".\config.json;." --name "Music Agent" main.py
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data ".\config.json;." --name "Music Agent" main.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
 ## 🛠️ Useful Commands

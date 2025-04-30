@@ -3,3 +3,5 @@ keyboard
 pyinstaller
 appdirs
 ratelimit
+win10toast
+winrt
