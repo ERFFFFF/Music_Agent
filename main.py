@@ -1,14 +1,13 @@
 import os
 import sys
-import json
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import keyboard
 import logging
 import appdirs
 import ctypes
-import ctypes.wintypes
 from ratelimit import limits, sleep_and_retry
+from dotenv import dotenv_values
 import threading
 import time
 
@@ -76,17 +75,24 @@ def resource_path(relative_path):
 
 
 # Load config
-config_path = resource_path("config.json")
-try:
-    with open(config_path, "r") as f:
-        cfg = json.load(f)["spotify"]
-    logging.info("Config loaded.")
-except Exception as e:
-    logging.error(f"Failed to load config: {e}", exc_info=True)
+env_path = resource_path(".env")
+cfg = dotenv_values(env_path)
+required_keys = [
+    "SPOTIFY_CLIENT_ID",
+    "SPOTIFY_CLIENT_SECRET",
+    "SPOTIFY_REDIRECT_URI",
+    "SPOTIFY_DEVICE_ID",
+]
+missing = [k for k in required_keys if not cfg.get(k)]
+if missing:
+    logging.error(f"Missing environment variables in .env: {', '.join(missing)}")
     sys.exit(1)
+logging.info("Config loaded.")
 
 # Spotify client
-cache_file = os.path.join(os.path.dirname(config_path), ".cache")
+cache_data_dir = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
+os.makedirs(cache_data_dir, exist_ok=True)
+cache_file = os.path.join(cache_data_dir, ".cache")
 try:
     scope = (
         "user-read-playback-state "
@@ -96,14 +102,16 @@ try:
     )
     sp = spotipy.Spotify(
         auth_manager=SpotifyOAuth(
-            client_id=cfg["client_id"],
-            client_secret=cfg["client_secret"],
-            redirect_uri=cfg["redirect_uri"],
+            client_id=cfg["SPOTIFY_CLIENT_ID"],
+            client_secret=cfg["SPOTIFY_CLIENT_SECRET"],
+            redirect_uri=cfg["SPOTIFY_REDIRECT_URI"],
             scope=scope,
             cache_path=cache_file,
         )
     )
     logging.info("Spotify client initialized.")
+except SystemExit:
+    raise
 except Exception as e:
     logging.error(f"Spotify init error: {e}", exc_info=True)
     sys.exit(1)
@@ -120,7 +128,7 @@ def transfer_playback(device_id):
         logging.error(f"Transfer playback failed: {e}", exc_info=True)
 
 
-transfer_playback(cfg["device_id"])
+transfer_playback(cfg["SPOTIFY_DEVICE_ID"])
 
 
 # Playback controls (no UI)
@@ -176,16 +184,34 @@ def toggle_like_current_song():
         logging.error(f"Toggle like error: {e}", exc_info=True)
 
 
-### does not work
 def wake_device_only(device_id):
+    """Wake an inactive device by forcing playback then pausing.
+
+    Only works if the device appears in the Spotify Connect device list
+    (i.e. the Spotify client is running on it). Truly dormant devices
+    (app closed / machine asleep) cannot be woken via the Spotify API.
+    """
     try:
-        # step 1: wake by playing
+        devices = rate_limited_spotify_call(sp.devices)
+        available = devices.get("devices", [])
+        device_found = any(d["id"] == device_id for d in available)
+
+        if not device_found:
+            logging.warning(
+                f"Device {device_id} not in available devices list. "
+                "Cannot wake a fully dormant device via Spotify API — "
+                "the Spotify client must be running on the target device."
+            )
+            return
+
+        # Force playback on the target device to wake it
         rate_limited_spotify_call(
-            sp.transfer_playback, device_ids=[device_id], force_play=True
+            sp.transfer_playback, device_id=device_id, force_play=True
         )
-        # step 2: immediately pause
+        # Give the device time to actually start playing before pausing
+        time.sleep(3)
         rate_limited_spotify_call(sp.pause_playback)
-        logging.info(f"Woke (but paused) on {device_id}")
+        logging.info(f"Woke (then paused) device {device_id}.")
     except Exception as e:
         logging.error(f"Failed to wake device {device_id}: {e}", exc_info=True)
 
@@ -248,7 +274,7 @@ def setup_hotkeys():
     keyboard.add_hotkey("ctrl+alt+left", skip_to_previous)
     keyboard.add_hotkey("ctrl+alt+l", toggle_like_current_song)
     keyboard.add_hotkey("ctrl+alt+c", show_current_song)
-    keyboard.add_hotkey("ctrl+alt+w", lambda: wake_device_only(cfg["device_id"]))
+    keyboard.add_hotkey("ctrl+alt+w", lambda: wake_device_only(cfg["SPOTIFY_DEVICE_ID"]))
     logging.info("Hotkeys registered; awaiting events.")
 
 

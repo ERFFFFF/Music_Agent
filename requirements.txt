@@ -3,5 +3,4 @@ keyboard
 pyinstaller
 appdirs
 ratelimit
-win10toast
-winrt
+python-dotenv

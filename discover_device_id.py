@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-import json
-import os
 import sys
 from spotipy import Spotify
 from spotipy.oauth2 import SpotifyOAuth
+from dotenv import dotenv_values
 
 
-def load_config(path="config.json"):
-    """Load Spotify OAuth settings from config.json."""
-    if not os.path.isfile(path):
-        print(f"Error: config file not found at {path}", file=sys.stderr)
-        sys.exit(1)
-    with open(path, "r") as f:
-        cfg = json.load(f).get("spotify", {})
-    required = ["client_id", "client_secret", "redirect_uri"]
-    missing = [k for k in required if k not in cfg]
+def load_config(path=".env"):
+    """Load Spotify OAuth settings from .env file."""
+    cfg = dotenv_values(path)
+    required = ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_REDIRECT_URI"]
+    missing = [k for k in required if not cfg.get(k)]
     if missing:
-        print(f"Error: missing config keys: {', '.join(missing)}", file=sys.stderr)
+        print(f"Error: missing .env keys: {', '.join(missing)}", file=sys.stderr)
         sys.exit(1)
     return cfg
 
@@ -25,9 +20,9 @@ def main():
     cfg = load_config()
     scope = "user-read-playback-state"
     auth = SpotifyOAuth(
-        client_id=cfg["client_id"],
-        client_secret=cfg["client_secret"],
-        redirect_uri=cfg["redirect_uri"],
+        client_id=cfg["SPOTIFY_CLIENT_ID"],
+        client_secret=cfg["SPOTIFY_CLIENT_SECRET"],
+        redirect_uri=cfg["SPOTIFY_REDIRECT_URI"],
         scope=scope,
     )
     sp = Spotify(auth_manager=auth)

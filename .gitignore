@@ -1,9 +1,6 @@
 # Ignore all .cache files
 .cache
 
-# Ignore specific config file
-config.json
-
 # Exclude exe generation files
 main.spec
 /dist/
