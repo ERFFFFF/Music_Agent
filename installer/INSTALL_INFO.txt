@@ -1,0 +1,17 @@
+Music Agent - Spotify Playback Controller
+
+Before installing, make sure you have:
+
+1. A Spotify account (free or premium)
+2. A Spotify Developer app created at:
+   https://developer.spotify.com/dashboard/
+
+3. Your Client ID and Client Secret ready
+   (found in your Spotify app's Settings page)
+
+The installer will ask for these credentials and verify
+them with Spotify before completing the installation.
+
+Note: On first launch, a browser window will open once for
+Spotify authorization. After that, the app runs silently in
+the background and responds to keyboard shortcuts.

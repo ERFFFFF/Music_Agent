@@ -23,12 +23,33 @@ Create an agent that provides seamless control over Spotify playback using keybi
 ## 🔗 Useful Links
 
 - **Spotify Developer Portal**: [Spotify Dashboard](https://developer.spotify.com/dashboard/)
+- **Inno Setup**: [Download](https://jrsoftware.org/isdl.php) (only needed to build the installer)
 
-## 🚀 Installation
+## 🚀 Installation (for users)
+
+Download `MusicAgentSetup.exe` from the [Releases](https://github.com/ERFFFFF/Music_Agent/releases) page and run it.
+
+The installer will:
+
+1. Ask where to install the app
+2. Ask for your Spotify **Client ID** and **Client Secret** (see [How to get credentials](#how-to-get-spotify-credentials) below)
+3. Optionally add the app to Windows startup
+4. Create Start Menu shortcuts and an uninstaller
+
+On first launch, a browser window opens once for Spotify authorization. After that, the app runs silently in the background.
+
+### How to get Spotify credentials
+
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
+2. Create a new app
+3. In your app's **Settings**, copy the **Client ID** and **Client Secret**
+4. Add `http://127.0.0.1:8888/callback` as a **Redirect URI** in the app settings
+
+The device is auto-discovered at startup — the agent picks the first available Spotify Connect device. If no device is found, it retries every 5 minutes until one appears.
+
+## 🔧 Development Setup (for contributors)
 
 ### 1. Install Required Packages
-
-Make sure you have all the necessary packages by running:
 
 ```bash
 pip install -r requirements.txt
@@ -49,14 +70,6 @@ SPOTIFY_CLIENT_ID=your_client_id_here
 SPOTIFY_CLIENT_SECRET=your_client_secret_here
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 ```
-
-#### How to get each variable
-
-- **SPOTIFY_CLIENT_ID** and **SPOTIFY_CLIENT_SECRET**: Create a new app on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/). Once created, go to your app's **Settings** to find the Client ID and Client Secret.
-
-- **SPOTIFY_REDIRECT_URI**: Set this to `http://127.0.0.1:8888/callback`. You must also add this exact URI in your Spotify app settings under **Redirect URIs** on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
-
-The device is auto-discovered at startup — the agent picks the first available Spotify Connect device. If no device is found, it retries every 5 minutes until one appears. You can also use `python discover_device_id.py` to manually list devices.
 
 #### git-crypt
 
@@ -94,6 +107,31 @@ The output is at `dist\Music Agent\Music Agent.exe`. The Startup shortcut still 
 
 ```powershell
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
+```
+
+### 4. Build the Installer
+
+Requires [Inno Setup 6](https://jrsoftware.org/isdl.php) to be installed.
+
+#### Using the build script (recommended)
+
+Builds the exe with PyInstaller then compiles the installer in one step:
+
+```powershell
+.\installer\build_installer.ps1
+```
+
+Output: `installer_output\MusicAgentSetup.exe`
+
+#### Manual steps
+
+```powershell
+# Step 1: Build with PyInstaller
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build
+pyinstaller "Music Agent.spec"
+
+# Step 2: Compile installer (adjust path to your Inno Setup install)
+& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\installer.iss
 ```
 
 ## 🛠️ Useful Commands

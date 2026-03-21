@@ -78,8 +78,18 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def find_env():
+    """Locate .env file: check next to exe first (installer scenario),
+    then fall back to _MEIPASS (PyInstaller bundled scenario)."""
+    exe_dir = os.path.dirname(sys.executable)
+    env_beside_exe = os.path.join(exe_dir, ".env")
+    if os.path.isfile(env_beside_exe):
+        return env_beside_exe
+    return resource_path(".env")
+
+
 # Load config
-env_path = resource_path(".env")
+env_path = find_env()
 cfg = dotenv_values(env_path)
 required_keys = [
     "SPOTIFY_CLIENT_ID",

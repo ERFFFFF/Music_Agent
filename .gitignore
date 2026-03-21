@@ -7,3 +7,6 @@ main.spec
 /build/
 Music Agent.spec
 music_agent_control.log
+
+# Installer output
+/installer_output/
