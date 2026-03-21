@@ -50,7 +50,7 @@ Music Agent.spec        # PyInstaller build spec
 ## Building
 
 ```powershell
-pyinstaller --onefile --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py
+pyinstaller --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py
 ```
 
 The exe goes to `dist/Music Agent.exe`. See README.md for the full PowerShell one-liner that also copies to Startup folder and sets registry keys.

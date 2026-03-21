@@ -28,16 +28,20 @@ def rate_limited_spotify_call(func, *args, **kwargs):
 
 
 def initialize_logging():
-    """Initialize file-based logging."""
+    """Initialize logging to both file and console."""
     app_data_path = os.path.join(
         appdirs.user_log_dir("Music Agent ERFFFFF", "MusicAgent")
     )
     os.makedirs(app_data_path, exist_ok=True)
     log_file = os.path.join(app_data_path, "music_agent_control.log")
+    log_format = "%(asctime)s:%(levelname)s:%(message)s"
     logging.basicConfig(
-        filename=log_file,
         level=logging.INFO,
-        format="%(asctime)s:%(levelname)s:%(message)s",
+        format=log_format,
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(sys.stdout),
+        ],
     )
     logging.info("Logging initialized.")
 
@@ -81,7 +85,6 @@ required_keys = [
     "SPOTIFY_CLIENT_ID",
     "SPOTIFY_CLIENT_SECRET",
     "SPOTIFY_REDIRECT_URI",
-    "SPOTIFY_DEVICE_ID",
 ]
 missing = [k for k in required_keys if not cfg.get(k)]
 if missing:
@@ -117,6 +120,36 @@ except Exception as e:
     sys.exit(1)
 
 
+DEVICE_ID = None
+SCAN_INTERVAL = 300  # seconds between device scans when no device is found
+
+
+def discover_device():
+    """Find the first available Spotify Connect device."""
+    try:
+        devices = rate_limited_spotify_call(sp.devices)
+        available = devices.get("devices", [])
+        if available:
+            dev = available[0]
+            logging.info(f"Discovered device: {dev['name']!r} (id={dev['id']})")
+            return dev["id"]
+    except Exception as e:
+        logging.error(f"Device discovery failed: {e}", exc_info=True)
+    return None
+
+
+def discover_device_loop():
+    """Background loop that scans for a device until one is found."""
+    global DEVICE_ID
+    while DEVICE_ID is None:
+        logging.info("No device found. Retrying in 5 minutes...")
+        time.sleep(SCAN_INTERVAL)
+        DEVICE_ID = discover_device()
+        if DEVICE_ID:
+            logging.info(f"Device found after retry: {DEVICE_ID}")
+            transfer_playback(DEVICE_ID)
+
+
 def transfer_playback(device_id):
     """Transfer playback to the given device ID."""
     try:
@@ -128,18 +161,37 @@ def transfer_playback(device_id):
         logging.error(f"Transfer playback failed: {e}", exc_info=True)
 
 
-transfer_playback(cfg["SPOTIFY_DEVICE_ID"])
+# Auto-discover device at startup
+DEVICE_ID = discover_device()
+if DEVICE_ID:
+    transfer_playback(DEVICE_ID)
+else:
+    threading.Thread(target=discover_device_loop, daemon=True).start()
 
 
-# Playback controls (no UI)
+# Playback controls
+def _check_device():
+    """Re-discover device if current one is gone, return device_id or None."""
+    global DEVICE_ID
+    if DEVICE_ID is None:
+        DEVICE_ID = discover_device()
+    if DEVICE_ID is None:
+        logging.warning("No Spotify device available. Waiting for discovery...")
+        return None
+    return DEVICE_ID
+
+
 def play_pause_music():
     try:
+        dev = _check_device()
+        if not dev:
+            return
         state = rate_limited_spotify_call(sp.current_playback)
         if state and state.get("is_playing"):
-            rate_limited_spotify_call(sp.pause_playback)
+            rate_limited_spotify_call(sp.pause_playback, device_id=dev)
             logging.info("Paused playback.")
         else:
-            rate_limited_spotify_call(sp.start_playback)
+            rate_limited_spotify_call(sp.start_playback, device_id=dev)
             logging.info("Started playback.")
     except Exception as e:
         logging.error(f"Play/pause error: {e}", exc_info=True)
@@ -147,7 +199,10 @@ def play_pause_music():
 
 def skip_to_next():
     try:
-        rate_limited_spotify_call(sp.next_track)
+        dev = _check_device()
+        if not dev:
+            return
+        rate_limited_spotify_call(sp.next_track, device_id=dev)
         logging.info("Skipped to next track.")
     except Exception as e:
         logging.error(f"Skip next error: {e}", exc_info=True)
@@ -155,7 +210,10 @@ def skip_to_next():
 
 def skip_to_previous():
     try:
-        rate_limited_spotify_call(sp.previous_track)
+        dev = _check_device()
+        if not dev:
+            return
+        rate_limited_spotify_call(sp.previous_track, device_id=dev)
         logging.info("Skipped to previous track.")
     except Exception as e:
         logging.error(f"Skip previous error: {e}", exc_info=True)
@@ -184,7 +242,7 @@ def toggle_like_current_song():
         logging.error(f"Toggle like error: {e}", exc_info=True)
 
 
-def wake_device_only(device_id):
+def wake_device():
     """Wake an inactive device by forcing playback then pausing.
 
     Only works if the device appears in the Spotify Connect device list
@@ -192,28 +250,17 @@ def wake_device_only(device_id):
     (app closed / machine asleep) cannot be woken via the Spotify API.
     """
     try:
-        devices = rate_limited_spotify_call(sp.devices)
-        available = devices.get("devices", [])
-        device_found = any(d["id"] == device_id for d in available)
-
-        if not device_found:
-            logging.warning(
-                f"Device {device_id} not in available devices list. "
-                "Cannot wake a fully dormant device via Spotify API — "
-                "the Spotify client must be running on the target device."
-            )
+        dev = _check_device()
+        if not dev:
             return
-
-        # Force playback on the target device to wake it
         rate_limited_spotify_call(
-            sp.transfer_playback, device_id=device_id, force_play=True
+            sp.transfer_playback, device_id=dev, force_play=True
         )
-        # Give the device time to actually start playing before pausing
         time.sleep(3)
         rate_limited_spotify_call(sp.pause_playback)
-        logging.info(f"Woke (then paused) device {device_id}.")
+        logging.info(f"Woke (then paused) device {dev}.")
     except Exception as e:
-        logging.error(f"Failed to wake device {device_id}: {e}", exc_info=True)
+        logging.error(f"Failed to wake device: {e}", exc_info=True)
 
 
 # Windows popup for current song
@@ -274,7 +321,7 @@ def setup_hotkeys():
     keyboard.add_hotkey("ctrl+alt+left", skip_to_previous)
     keyboard.add_hotkey("ctrl+alt+l", toggle_like_current_song)
     keyboard.add_hotkey("ctrl+alt+c", show_current_song)
-    keyboard.add_hotkey("ctrl+alt+w", lambda: wake_device_only(cfg["SPOTIFY_DEVICE_ID"]))
+    keyboard.add_hotkey("ctrl+alt+w", wake_device)
     logging.info("Hotkeys registered; awaiting events.")
 
 

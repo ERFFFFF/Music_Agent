@@ -48,7 +48,6 @@ cp .env.template .env
 SPOTIFY_CLIENT_ID=your_client_id_here
 SPOTIFY_CLIENT_SECRET=your_client_secret_here
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
-SPOTIFY_DEVICE_ID=your_device_id_here
 ```
 
 #### How to get each variable
@@ -57,7 +56,7 @@ SPOTIFY_DEVICE_ID=your_device_id_here
 
 - **SPOTIFY_REDIRECT_URI**: Set this to `http://127.0.0.1:8888/callback`. You must also add this exact URI in your Spotify app settings under **Redirect URIs** on the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
 
-- **SPOTIFY_DEVICE_ID**: Run `python discover_device_id.py` to list all your available Spotify Connect devices and their IDs. Copy the ID of the device you want to control.
+The device is auto-discovered at startup — the agent picks the first available Spotify Connect device. If no device is found, it retries every 5 minutes until one appears. You can also use `python discover_device_id.py` to manually list devices.
 
 #### git-crypt
 
@@ -71,18 +70,30 @@ If you don't have the key, create your own `.env` from the `.env.template` above
 
 ### 3. Build the Executable
 
-#### In PowerShell
+#### Full build (first time or after code changes)
 
-Using PowerShell, type the following command inside the repository folder :
+Builds the exe from scratch, creates a shortcut in the Windows Startup folder so the agent launches on login, and registers the app ID for notifications.
+
+Run in PowerShell inside the repository folder :
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.exe"; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py; Copy-Item -Path ".\dist\Music Agent.exe" -Destination "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\"; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"; pyinstaller --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py; $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"); $sc.TargetPath = (Resolve-Path ".\dist\Music Agent\Music Agent.exe").Path; $sc.WorkingDirectory = (Resolve-Path ".\dist\Music Agent").Path; $sc.Save(); New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
-Or this one if you do not want to put the .exe inside the startup folder :
+#### Quick rebuild (using the spec file)
+
+If you already ran the full build once and just need to rebuild after a small change, you can reuse the existing `Music Agent.spec` file. It already contains all the build settings (icon, bundled `.env`, no console, etc.) so you don't need to pass them again :
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --onefile --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build; pyinstaller "Music Agent.spec"
+```
+
+The output is at `dist\Music Agent\Music Agent.exe`. The Startup shortcut still points to it, so no need to recreate it.
+
+#### Build only (without startup shortcut)
+
+```powershell
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --noconsole --icon=poulet.ico --add-data ".\.env;." --name "Music Agent" main.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
 ## 🛠️ Useful Commands
