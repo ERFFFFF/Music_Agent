@@ -4,3 +4,6 @@ pyinstaller
 appdirs
 ratelimit
 python-dotenv
+pystray
+Pillow
+customtkinter

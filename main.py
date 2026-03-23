@@ -10,6 +10,10 @@ from ratelimit import limits, sleep_and_retry
 from dotenv import dotenv_values
 import threading
 import time
+import pystray
+from PIL import Image
+from config import load_config
+from settings_ui import open_settings
 
 # this string is your “AppUserModelID”
 MY_APP_ID = "com.erfffff.musicagent"
@@ -86,6 +90,15 @@ def find_env():
     if os.path.isfile(env_beside_exe):
         return env_beside_exe
     return resource_path(".env")
+
+
+def find_icon():
+    """Locate poulet.ico: check next to exe first, then resource_path."""
+    exe_dir = os.path.dirname(sys.executable)
+    beside_exe = os.path.join(exe_dir, "poulet.ico")
+    if os.path.isfile(beside_exe):
+        return beside_exe
+    return resource_path("poulet.ico")
 
 
 # Load config
@@ -252,27 +265,6 @@ def toggle_like_current_song():
         logging.error(f"Toggle like error: {e}", exc_info=True)
 
 
-def wake_device():
-    """Wake an inactive device by forcing playback then pausing.
-
-    Only works if the device appears in the Spotify Connect device list
-    (i.e. the Spotify client is running on it). Truly dormant devices
-    (app closed / machine asleep) cannot be woken via the Spotify API.
-    """
-    try:
-        dev = _check_device()
-        if not dev:
-            return
-        rate_limited_spotify_call(
-            sp.transfer_playback, device_id=dev, force_play=True
-        )
-        time.sleep(3)
-        rate_limited_spotify_call(sp.pause_playback)
-        logging.info(f"Woke (then paused) device {dev}.")
-    except Exception as e:
-        logging.error(f"Failed to wake device: {e}", exc_info=True)
-
-
 # Windows popup for current song
 NIM_ADD = 0x00000000
 NIM_DELETE = 0x00000002
@@ -317,27 +309,95 @@ def show_current_song():
             song = playback["item"]["name"]
             artists = ", ".join(a["name"] for a in playback["item"]["artists"])
             threading.Thread(
-                target=create_notify_icon, args=("Now Playing", f"{song} — {artists}")
+                target=create_notify_icon, args=("Now Playing", f"{song} — {artists}"),
+                daemon=True,
             ).start()
             logging.info(f"Displayed current song: {song} by {artists}")
     except Exception as e:
         logging.error(f"Show current song error: {e}", exc_info=True)
 
 
-# Hotkeys
+# Hotkey action map: config key -> callable
+HOTKEY_ACTIONS = {
+    "play_pause": play_pause_music,
+    "next_track": skip_to_next,
+    "previous_track": skip_to_previous,
+    "like_unlike": toggle_like_current_song,
+    "show_current": show_current_song,
+}
+
+app_config = load_config()
+
+
 def setup_hotkeys():
-    keyboard.add_hotkey("ctrl+alt+up", play_pause_music)
-    keyboard.add_hotkey("ctrl+alt+right", skip_to_next)
-    keyboard.add_hotkey("ctrl+alt+left", skip_to_previous)
-    keyboard.add_hotkey("ctrl+alt+l", toggle_like_current_song)
-    keyboard.add_hotkey("ctrl+alt+c", show_current_song)
-    keyboard.add_hotkey("ctrl+alt+w", wake_device)
-    logging.info("Hotkeys registered; awaiting events.")
+    """Register global hotkeys from current config."""
+    for action_id, func in HOTKEY_ACTIONS.items():
+        hotkey_str = app_config["hotkeys"].get(action_id)
+        if hotkey_str:
+            try:
+                keyboard.add_hotkey(hotkey_str, func)
+            except Exception as e:
+                logging.error(f"Failed to register hotkey '{hotkey_str}' for {action_id}: {e}")
+    logging.info("Hotkeys registered: %s", app_config["hotkeys"])
+
+
+def reload_hotkeys():
+    """Unregister all hotkeys, reload config, re-register."""
+    global app_config
+    keyboard.unhook_all_hotkeys()
+    app_config = load_config()
+    setup_hotkeys()
+    logging.info("Hotkeys reloaded from config.")
+
+
+def create_tray_icon():
+    """Create and return a pystray Icon with right-click menu."""
+    icon_path = find_icon()
+    try:
+        icon_image = Image.open(icon_path)
+    except Exception as e:
+        logging.warning(f"Could not load icon from {icon_path}: {e}. Using fallback.")
+        icon_image = Image.new("RGBA", (64, 64), (70, 130, 180, 255))
+
+    menu = pystray.Menu(
+        pystray.MenuItem(
+            "Settings",
+            lambda: open_settings(on_save_callback=reload_hotkeys),
+        ),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Quit", lambda icon, item: quit_app(icon)),
+    )
+
+    icon = pystray.Icon(
+        name="MusicAgent",
+        icon=icon_image,
+        title="Music Agent",
+        menu=menu,
+    )
+    return icon
+
+
+def quit_app(icon):
+    """Clean shutdown: stop tray icon, which unblocks main thread."""
+    icon.stop()
+    logging.info("Music Agent stopped via tray menu.")
 
 
 def main():
     setup_hotkeys()
-    keyboard.wait()
+
+    # Run keyboard listener on a daemon thread
+    kb_thread = threading.Thread(target=keyboard.wait, daemon=True)
+    kb_thread.start()
+
+    # Run tray icon on main thread (blocks until Quit)
+    icon = create_tray_icon()
+    logging.info("System tray icon started.")
+    icon.run()
+
+    # Cleanup after icon.stop()
+    keyboard.unhook_all_hotkeys()
+    logging.info("Music Agent shut down.")
 
 
 if __name__ == "__main__":
