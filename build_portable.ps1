@@ -7,7 +7,8 @@
 #
 #   .\build_portable.ps1          ->  dist\MusicAgent.exe
 #
-# Spotify mode still works in this build: drop a .env next to the exe and pick it in Settings.
+# Spotify mode still works in this build — the app asks for the Client ID + Secret on first launch and
+# keeps them in the same cadence_config.txt, so there is nothing to bundle either way.
 
 $ErrorActionPreference = "Stop"
 
