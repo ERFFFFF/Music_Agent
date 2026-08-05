@@ -53,13 +53,16 @@ where the same two windows are one click away (*Sign in… / Sign out*, *Credent
 3. That's it: it goes to the system tray and the hotkeys work.
 
 Everything the app remembers lives in **one file next to it — `cadence_config.txt`**: the mode, your
-Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. Copy that
-file with the exe and the new machine is already set up. (If the folder is read-only — an installed copy
-under Program Files — it falls back to `%LOCALAPPDATA%\MusicAgent`.)
+Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. (If the
+folder is read-only — an installed copy under Program Files — it falls back to `%LOCALAPPDATA%\MusicAgent`.)
 
-> **Treat `cadence_config.txt` like a password file.** It holds a live Cadence session token; anyone
-> with the file can control your player until you hit Sign out. It's written user-only where the OS
-> supports it, and it's git-ignored here.
+> **The credentials in it are encrypted, not plaintext.** The session token, URL and API keys are
+> sealed with Windows DPAPI, which ties them to *your Windows account*: another user on the PC, or
+> anyone who copies the file off it, gets unreadable blobs. Only `mode` and your hotkeys stay readable.
+
+That protection is also why the file doesn't travel. Move the exe to **another PC or another Windows
+account** and the secrets won't decrypt there, so it asks you to sign in once on the new machine —
+your shortcuts and mode come across intact. Sign out in Settings clears the session either way.
 
 Using the app keeps you signed in: each hotkey refreshes the session, so it only expires after ~7 days
 of not touching it at all.

@@ -14,11 +14,14 @@ Format is JSON (readable, and one parser instead of three) holding the whole con
 It replaces the old config.json + cadence_session.json + .env trio, which scattered one app's settings
 across three files and two directories; those are migrated in on first run and then left alone.
 
-SECURITY: `cadence_session` is a bearer credential (a 7-day sliding Cadence session). The file is
-written 0600 where the OS honours that. Treat it like a password: don't commit it, don't share the
-folder. "Sign out" in Settings clears it.
+SECURITY: every credential in here (session cookie, Cadence URL, Spotify and Cloudflare keys) is
+encrypted at rest with Windows DPAPI — see SECRET_FIELDS below. `mode` and `hotkeys` stay readable on
+purpose. The file is also written 0600 where the OS honours that. "Sign out" in Settings clears the
+session.
 """
 
+import base64
+import ctypes
 import json
 import logging
 import os
@@ -64,6 +67,81 @@ DEFAULTS = {
     "spotify_redirect_uri": DEFAULT_REDIRECT_URI,
     "hotkeys": dict(DEFAULT_HOTKEYS),
 }
+
+# --------------------------------------------------------------------- credentials at rest (DPAPI)
+# These fields are encrypted in the file with Windows CryptProtectData, which keys the ciphertext to
+# the Windows ACCOUNT that saved it: no password to type at launch, and no key shipped inside the exe
+# (which would only be obfuscation — anyone holding the exe would hold the key).
+#
+# The price is that the secrets do NOT travel with a portable copy. Carry the exe to another PC or
+# another Windows user and these fields won't decrypt, so the app treats them as empty and asks you to
+# sign in once there. `mode` and `hotkeys` are deliberately left plaintext so a moved copy still keeps
+# its shortcuts and doesn't look corrupt.
+SECRET_FIELDS = ("cadence_url", "cadence_session", "cf_access_client_id", "cf_access_client_secret",
+                 "spotify_client_id", "spotify_client_secret")
+ENC_PREFIX = "enc:"
+CRYPTPROTECT_UI_FORBIDDEN = 0x1  # this is a --noconsole tray app: never let DPAPI pop a dialog
+
+
+class _Blob(ctypes.Structure):
+    """DATA_BLOB. c_uint32 rather than wintypes.DWORD because importing ctypes.wintypes raises on
+    Linux/macOS, and this module has to at least IMPORT there (cadence.py's self-check runs anywhere)."""
+
+    _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(protect, data):
+    """CryptProtectData / CryptUnprotectData over bytes. None means "couldn't": not Windows, or a blob
+    that belongs to a different Windows account."""
+    if os.name != "nt":
+        return None
+    buf = ctypes.create_string_buffer(data, len(data))
+    src = _Blob(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    out = _Blob()
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    if not fn(ctypes.byref(src), None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out)):
+        return None
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+
+
+def _encrypt(value):
+    """Plaintext -> "enc:<base64 DPAPI blob>". Empty stays empty (an encrypted "" is just noise), and
+    an already-encrypted value passes through so a re-save can't double-wrap it.
+
+    If DPAPI is unavailable the value is stored as-is: a config that refuses to save would lose the
+    session the user just typed, which is worse than one that isn't encrypted on a platform that
+    can't. On Windows this branch doesn't happen."""
+    if not isinstance(value, str) or not value or value.startswith(ENC_PREFIX):
+        return value
+    blob = _dpapi(True, value.encode("utf-8"))
+    if blob is None:
+        logging.warning("DPAPI unavailable — credentials in %s are NOT encrypted.", CONFIG_FILENAME)
+        return value
+    return ENC_PREFIX + base64.b64encode(blob).decode("ascii")
+
+
+def _decrypt(value):
+    """"enc:<base64>" -> plaintext. A value without the prefix is from a config written before this
+    existed, and is returned unchanged (load_config re-saves it encrypted).
+
+    A blob this account can't open yields "" rather than a raw error: is_configured() then reads it as
+    "not signed in" and shows the sign-in window, which is the recoverable outcome. Handing the rest of
+    the app an undecryptable string would instead look like a dead session token."""
+    if not isinstance(value, str) or not value.startswith(ENC_PREFIX):
+        return value
+    try:
+        blob = base64.b64decode(value[len(ENC_PREFIX):], validate=True)
+    except ValueError:  # binascii.Error subclasses it
+        return ""
+    plain = _dpapi(False, blob)
+    if plain is None:
+        logging.warning("Saved credentials belong to a different Windows account — sign in again.")
+        return ""
+    return plain.decode("utf-8", "replace")
 
 
 def app_dir():
@@ -162,27 +240,45 @@ def load_config():
     raises: this runs before anything else, so a bad file must not be able to stop the app starting."""
     cfg = {**DEFAULTS, "hotkeys": dict(DEFAULT_HOTKEYS)}
     path = config_path()
+    plaintext_on_disk = False
     if os.path.isfile(path):
         data = _read_json(path)
         if not data:
             logging.warning("%s is unreadable or not valid JSON — using defaults.", path)
         cfg.update({k: v for k, v in data.items() if k in DEFAULTS and k != "hotkeys"})
         cfg["hotkeys"] = {**DEFAULT_HOTKEYS, **(data.get("hotkeys") or {})}
+        # A file from before encryption existed, or written where DPAPI wasn't available.
+        plaintext_on_disk = any(isinstance(data.get(k), str) and data[k]
+                                and not data[k].startswith(ENC_PREFIX) for k in SECRET_FIELDS)
     else:
         cfg.update(_migrate())
+        plaintext_on_disk = any(cfg.get(k) for k in SECRET_FIELDS)  # migrated in from the old files
+    for key in SECRET_FIELDS:
+        cfg[key] = _decrypt(cfg.get(key, ""))
     if cfg.get("mode") not in MODES:
         cfg["mode"] = DEFAULTS["mode"]
+    if plaintext_on_disk:
+        # Encrypt on sight instead of waiting for the next Settings save — otherwise an upgraded
+        # install leaves its old plaintext session sitting on disk until the user happens to save.
+        try:
+            save_config(cfg)
+        except OSError:
+            pass  # a read-only config dir is already handled everywhere else; don't break the launch
     return cfg
 
 
 def save_config(config):
-    """Write the whole config atomically (temp file + replace), 0600 where the OS honours it — the
-    Cadence session token in here is a credential."""
+    """Write the whole config atomically (temp file + replace), 0600 where the OS honours it. Every
+    field in SECRET_FIELDS is DPAPI-encrypted on the way out — `config` itself stays plaintext, since
+    that's the dict the rest of the app reads from."""
     path = config_path()
     tmp_path = path + ".tmp"
     try:
+        stored = {k: config.get(k, v) for k, v in DEFAULTS.items()}
+        for key in SECRET_FIELDS:
+            stored[key] = _encrypt(stored.get(key, ""))
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump({k: config.get(k, v) for k, v in DEFAULTS.items()}, f, indent=2)
+            json.dump(stored, f, indent=2)
             f.write("\n")
         os.replace(tmp_path, path)
         try:
@@ -231,15 +327,22 @@ def demo():
         assert cfg["cadence_session"] == "" and cfg["spotify_client_id"] == ""
 
         # everything in one file, including the session token and the shortcuts
+        cfg["cadence_url"] = "https://cadence.example"
         cfg["cadence_session"] = "cookie-value"
         cfg["cf_access_client_id"] = "cf-id"
         cfg["cf_access_client_secret"] = "cf-secret"
         cfg["hotkeys"]["play_pause"] = "f1"
         save_spotify_credentials(cfg, "sp-id", "sp-secret")
+
+        # ...but no credential is readable in it
         raw = open(config_path()).read()
-        for expected in ("cookie-value", "cf-id", "cf-secret", "sp-id", "sp-secret", "f1"):
-            assert expected in raw, f"{expected} missing from {CONFIG_FILENAME}"
+        assert "f1" in raw and '"mode": "cadence"' in raw, "mode and hotkeys stay plaintext on purpose"
+        if os.name == "nt":
+            for secret in ("cookie-value", "cf-id", "cf-secret", "sp-id", "sp-secret", "cadence.example"):
+                assert secret not in raw, f"{secret} is sitting in {CONFIG_FILENAME} IN PLAINTEXT"
+            assert raw.count(ENC_PREFIX) == len(SECRET_FIELDS), raw
         back = load_config()
+        assert back["cadence_url"] == "https://cadence.example"
         assert back["cadence_session"] == "cookie-value"
         assert back["cf_access_client_id"] == "cf-id" and back["cf_access_client_secret"] == "cf-secret"
         assert back["spotify_client_id"] == "sp-id" and back["spotify_redirect_uri"].endswith("/callback")
@@ -248,6 +351,22 @@ def demo():
         assert spotify_credentials(back)["SPOTIFY_CLIENT_ID"] == "sp-id"
         if os.name != "nt":
             assert oct(os.stat(config_path()).st_mode)[-3:] == "600", "session token must not be world-readable"
+
+        # a blob from another Windows account reads as "not signed in", not as a broken token
+        if os.name == "nt":
+            with open(config_path()) as f:
+                data = json.load(f)
+            data["cadence_session"] = ENC_PREFIX + base64.b64encode(b"not my blob").decode()
+            with open(config_path(), "w") as f:
+                json.dump(data, f)
+            assert load_config()["cadence_session"] == "", "an unopenable blob must not reach the app"
+
+        # an existing plaintext config is encrypted on the next load, not left lying around
+        with open(config_path(), "w") as f:
+            json.dump({"mode": "cadence", "cadence_session": "old-plaintext"}, f)
+        assert load_config()["cadence_session"] == "old-plaintext"
+        if os.name == "nt":
+            assert "old-plaintext" not in open(config_path()).read(), "upgrade must re-encrypt in place"
 
         # a corrupt file falls back to defaults instead of crashing the launch
         open(config_path(), "w").write("{ not json")
