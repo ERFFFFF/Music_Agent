@@ -10,3 +10,11 @@ music_agent_control.log
 
 # Installer output
 /installer_output/
+
+# Local state of a portable/dev run (config + the saved Cadence session cookie)
+__pycache__/
+cadence_config.txt
+cadence_config.txt.tmp
+config.json
+cadence_session.json
+MusicAgent.spec

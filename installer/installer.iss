@@ -60,36 +60,17 @@ Root: HKCU; Subkey: "Software\Classes\AppUserModelIDs\com.erfffff.musicagent"; V
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; .env is created by the installer script, not shipped in [Files]
+; Legacy: older versions of this installer wrote a .env here. The app now keeps its own next to the
+; exe when writable, else in AppData (which the uninstall step below offers to clear).
 Type: files; Name: "{app}\.env"
 
 [Code]
-var
-  CredentialsPage: TInputQueryWizardPage;
+{ There is deliberately NO Spotify credentials page here any more.
 
-function VerifySpotifyCredentials(ClientID, ClientSecret: String): Boolean;
-var
-  WinHttpReq: Variant;
-  StatusCode: Integer;
-  PostData: String;
-begin
-  Result := False;
-  try
-    WinHttpReq := CreateOleObject('WinHttp.WinHttpRequest.5.1');
-    WinHttpReq.Open('POST', 'https://accounts.spotify.com/api/token', False);
-    WinHttpReq.SetRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
-
-    PostData := 'grant_type=client_credentials'
-      + '&client_id=' + ClientID
-      + '&client_secret=' + ClientSecret;
-
-    WinHttpReq.Send(PostData);
-    StatusCode := WinHttpReq.Status;
-    Result := (StatusCode = 200);
-  except
-    Result := False;
-  end;
-end;
+  The app supports two accounts — a Cadence sign-in or a Spotify Client ID + Secret — and asks which
+  one you want on first launch (login_ui.choose_mode). Collecting Spotify credentials at install time
+  forced a choice the user may not want, and left a Cadence user unable to finish setup at all. The
+  app writes its own .env when you pick Spotify, so this installer now only installs files. }
 
 function InitializeSetup(): Boolean;
 var
@@ -115,119 +96,6 @@ begin
   end;
 end;
 
-procedure InitializeWizard();
-begin
-  { Create custom page after directory selection }
-  CredentialsPage := CreateInputQueryPage(
-    wpSelectDir,
-    'Spotify API Credentials',
-    'Enter your Spotify Developer application credentials.',
-    'Create a Spotify app at https://developer.spotify.com/dashboard/' + #13#10 +
-    'then copy your Client ID and Client Secret from the app settings.' + #13#10 + #13#10 +
-    'Your credentials will be verified with Spotify before continuing.'
-  );
-
-  CredentialsPage.Add('Spotify Client ID:', False);
-  CredentialsPage.Add('Spotify Client Secret:', False);
-end;
-
-procedure CurPageChanged(CurPageID: Integer);
-var
-  Lines: TArrayOfString;
-  i: Integer;
-  Line: String;
-  EnvPath: String;
-begin
-  { Pre-populate credentials from existing .env when arriving at the credentials page }
-  if CurPageID = CredentialsPage.ID then
-  begin
-    EnvPath := ExpandConstant('{app}\.env');
-    if FileExists(EnvPath) then
-    begin
-      if LoadStringsFromFile(EnvPath, Lines) then
-      begin
-        for i := 0 to GetArrayLength(Lines) - 1 do
-        begin
-          Line := Lines[i];
-          if Pos('SPOTIFY_CLIENT_ID=', Line) = 1 then
-            CredentialsPage.Values[0] := Copy(Line, Length('SPOTIFY_CLIENT_ID=') + 1, MaxInt);
-          if Pos('SPOTIFY_CLIENT_SECRET=', Line) = 1 then
-            CredentialsPage.Values[1] := Copy(Line, Length('SPOTIFY_CLIENT_SECRET=') + 1, MaxInt);
-        end;
-      end;
-    end;
-  end;
-end;
-
-function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  ClientID, ClientSecret: String;
-begin
-  Result := True;
-
-  if CurPageID = CredentialsPage.ID then
-  begin
-    ClientID := Trim(CredentialsPage.Values[0]);
-    ClientSecret := Trim(CredentialsPage.Values[1]);
-
-    if ClientID = '' then
-    begin
-      MsgBox('Please enter your Spotify Client ID.', mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-
-    if ClientSecret = '' then
-    begin
-      MsgBox('Please enter your Spotify Client Secret.', mbError, MB_OK);
-      Result := False;
-      Exit;
-    end;
-
-    { Verify credentials with Spotify API }
-    WizardForm.NextButton.Enabled := False;
-    WizardForm.BackButton.Enabled := False;
-    try
-      if not VerifySpotifyCredentials(ClientID, ClientSecret) then
-      begin
-        MsgBox(
-          'Invalid Spotify credentials.' + #13#10 + #13#10 +
-          'Please check your Client ID and Client Secret ' +
-          'on the Spotify Developer Dashboard and try again.',
-          mbError, MB_OK
-        );
-        Result := False;
-      end;
-    finally
-      WizardForm.NextButton.Enabled := True;
-      WizardForm.BackButton.Enabled := True;
-    end;
-  end;
-end;
-
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  EnvFile: String;
-  EnvContent: String;
-begin
-  if CurStep = ssPostInstall then
-  begin
-    EnvFile := ExpandConstant('{app}\.env');
-    EnvContent :=
-      'SPOTIFY_CLIENT_ID=' + Trim(CredentialsPage.Values[0]) + #13#10 +
-      'SPOTIFY_CLIENT_SECRET=' + Trim(CredentialsPage.Values[1]) + #13#10 +
-      'SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback' + #13#10;
-
-    if not SaveStringToFile(EnvFile, EnvContent, False) then
-    begin
-      MsgBox('Failed to write .env configuration file.' + #13#10 +
-             'You may need to create it manually in:' + #13#10 +
-             ExpandConstant('{app}'),
-             mbError, MB_OK);
-    end;
-  end;
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
@@ -239,7 +107,7 @@ begin
     begin
       if MsgBox(
         'Do you want to remove Music Agent application data?' + #13#10 +
-        '(OAuth tokens, logs, cached data)' + #13#10 + #13#10 +
+        '(saved sign-in, Spotify credentials, OAuth tokens, logs)' + #13#10 + #13#10 +
         'Location: ' + DataDir,
         mbConfirmation, MB_YESNO
       ) = IDYES then

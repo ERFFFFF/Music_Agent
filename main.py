@@ -1,34 +1,39 @@
+"""Music Agent — global hotkeys for whatever is playing your music.
+
+Two modes (config.py `mode`, switchable in Settings):
+  cadence — a Cadence account. The hotkey queues an intent that the open Cadence browser tab performs
+            (Cadence's audio IS that tab). Needs nothing but a login, which is why this mode is the
+            portable one: one exe, no Spotify developer app, and it works on a network where Spotify
+            itself is blocked.
+  spotify — the original: this machine's Spotify Connect device via the Web API. Needs a Spotify app's
+            Client ID + Secret, asked for on first launch.
+
+Everything the app remembers — mode, Cadence URL + session, Cloudflare token, Spotify keys, hotkeys —
+lives in ONE file beside the app: cadence_config.txt (see config.py).
+
+Both modes expose the same five actions (spotify_backend.SpotifyController / cadence.CadenceController),
+so everything below — hotkeys, tray, notifications — is mode-agnostic.
+"""
+
+import ctypes
+import logging
 import os
 import sys
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-import keyboard
-import logging
-import appdirs
-import ctypes
-from ratelimit import limits, sleep_and_retry
-from dotenv import dotenv_values
 import threading
 import time
+
+import appdirs
+import keyboard
 import pystray
 from PIL import Image
-from config import load_config
+
+from config import load_config, save_config, spotify_credentials
+import login_ui
 from settings_ui import open_settings
 
 # this string is your “AppUserModelID”
 MY_APP_ID = "com.erfffff.musicagent"
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(MY_APP_ID)
-
-
-# Rate limit constants
-CALLS_PER_SECOND = 1  # number of Spotify API calls per second
-
-
-@sleep_and_retry
-@limits(calls=CALLS_PER_SECOND, period=1)
-def rate_limited_spotify_call(func, *args, **kwargs):
-    """Rate-limited wrapper for Spotify API calls."""
-    return func(*args, **kwargs)
 
 
 def initialize_logging():
@@ -59,7 +64,8 @@ ERROR_ALREADY_EXISTS = 183
 
 def create_single_instance():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    kernel32.CreateMutexW(None, False, MUTEX_NAME)  # handle intentionally leaked: the lock lives as
+                                                    # long as the process, and closing it frees the name
     last_error = ctypes.get_last_error()
     if last_error == ERROR_ALREADY_EXISTS:
         logging.info("Another instance is already running.")
@@ -82,16 +88,6 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-def find_env():
-    """Locate .env file: check next to exe first (installer scenario),
-    then fall back to _MEIPASS (PyInstaller bundled scenario)."""
-    exe_dir = os.path.dirname(sys.executable)
-    env_beside_exe = os.path.join(exe_dir, ".env")
-    if os.path.isfile(env_beside_exe):
-        return env_beside_exe
-    return resource_path(".env")
-
-
 def find_icon():
     """Locate poulet.ico: check next to exe first, then resource_path."""
     exe_dir = os.path.dirname(sys.executable)
@@ -101,171 +97,7 @@ def find_icon():
     return resource_path("poulet.ico")
 
 
-# Load config
-env_path = find_env()
-cfg = dotenv_values(env_path)
-required_keys = [
-    "SPOTIFY_CLIENT_ID",
-    "SPOTIFY_CLIENT_SECRET",
-    "SPOTIFY_REDIRECT_URI",
-]
-missing = [k for k in required_keys if not cfg.get(k)]
-if missing:
-    logging.error(f"Missing environment variables in .env: {', '.join(missing)}")
-    sys.exit(1)
-logging.info("Config loaded.")
-
-# Spotify client
-cache_data_dir = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
-os.makedirs(cache_data_dir, exist_ok=True)
-cache_file = os.path.join(cache_data_dir, ".cache")
-try:
-    scope = (
-        "user-read-playback-state "
-        "user-modify-playback-state "
-        "user-library-modify "
-        "user-library-read"
-    )
-    sp = spotipy.Spotify(
-        auth_manager=SpotifyOAuth(
-            client_id=cfg["SPOTIFY_CLIENT_ID"],
-            client_secret=cfg["SPOTIFY_CLIENT_SECRET"],
-            redirect_uri=cfg["SPOTIFY_REDIRECT_URI"],
-            scope=scope,
-            cache_path=cache_file,
-        )
-    )
-    logging.info("Spotify client initialized.")
-except SystemExit:
-    raise
-except Exception as e:
-    logging.error(f"Spotify init error: {e}", exc_info=True)
-    sys.exit(1)
-
-
-DEVICE_ID = None
-SCAN_INTERVAL = 300  # seconds between device scans when no device is found
-
-
-def discover_device():
-    """Find the first available Spotify Connect device."""
-    try:
-        devices = rate_limited_spotify_call(sp.devices)
-        available = devices.get("devices", [])
-        if available:
-            dev = available[0]
-            logging.info(f"Discovered device: {dev['name']!r} (id={dev['id']})")
-            return dev["id"]
-    except Exception as e:
-        logging.error(f"Device discovery failed: {e}", exc_info=True)
-    return None
-
-
-def discover_device_loop():
-    """Background loop that scans for a device until one is found."""
-    global DEVICE_ID
-    while DEVICE_ID is None:
-        logging.info("No device found. Retrying in 5 minutes...")
-        time.sleep(SCAN_INTERVAL)
-        DEVICE_ID = discover_device()
-        if DEVICE_ID:
-            logging.info(f"Device found after retry: {DEVICE_ID}")
-            transfer_playback(DEVICE_ID)
-
-
-def transfer_playback(device_id):
-    """Transfer playback to the given device ID."""
-    try:
-        rate_limited_spotify_call(
-            sp.transfer_playback, device_id=device_id, force_play=False
-        )
-        logging.info(f"Playback transferred to device {device_id}.")
-    except Exception as e:
-        logging.error(f"Transfer playback failed: {e}", exc_info=True)
-
-
-# Auto-discover device at startup
-DEVICE_ID = discover_device()
-if DEVICE_ID:
-    transfer_playback(DEVICE_ID)
-else:
-    threading.Thread(target=discover_device_loop, daemon=True).start()
-
-
-# Playback controls
-def _check_device():
-    """Re-discover device if current one is gone, return device_id or None."""
-    global DEVICE_ID
-    if DEVICE_ID is None:
-        DEVICE_ID = discover_device()
-    if DEVICE_ID is None:
-        logging.warning("No Spotify device available. Waiting for discovery...")
-        return None
-    return DEVICE_ID
-
-
-def play_pause_music():
-    try:
-        dev = _check_device()
-        if not dev:
-            return
-        state = rate_limited_spotify_call(sp.current_playback)
-        if state and state.get("is_playing"):
-            rate_limited_spotify_call(sp.pause_playback, device_id=dev)
-            logging.info("Paused playback.")
-        else:
-            rate_limited_spotify_call(sp.start_playback, device_id=dev)
-            logging.info("Started playback.")
-    except Exception as e:
-        logging.error(f"Play/pause error: {e}", exc_info=True)
-
-
-def skip_to_next():
-    try:
-        dev = _check_device()
-        if not dev:
-            return
-        rate_limited_spotify_call(sp.next_track, device_id=dev)
-        logging.info("Skipped to next track.")
-    except Exception as e:
-        logging.error(f"Skip next error: {e}", exc_info=True)
-
-
-def skip_to_previous():
-    try:
-        dev = _check_device()
-        if not dev:
-            return
-        rate_limited_spotify_call(sp.previous_track, device_id=dev)
-        logging.info("Skipped to previous track.")
-    except Exception as e:
-        logging.error(f"Skip previous error: {e}", exc_info=True)
-
-
-def toggle_like_current_song():
-    try:
-        playback = rate_limited_spotify_call(sp.current_playback)
-        if not playback or not playback.get("item"):
-            return
-        track_id = playback["item"]["id"]
-        liked = rate_limited_spotify_call(
-            sp.current_user_saved_tracks_contains, tracks=[track_id]
-        )[0]
-        if liked:
-            rate_limited_spotify_call(
-                sp.current_user_saved_tracks_delete, tracks=[track_id]
-            )
-            logging.info(f"Unliked track {track_id}.")
-        else:
-            rate_limited_spotify_call(
-                sp.current_user_saved_tracks_add, tracks=[track_id]
-            )
-            logging.info(f"Liked track {track_id}.")
-    except Exception as e:
-        logging.error(f"Toggle like error: {e}", exc_info=True)
-
-
-# Windows popup for current song
+# Windows balloon notification
 NIM_ADD = 0x00000000
 NIM_DELETE = 0x00000002
 NIF_INFO = 0x00000010
@@ -302,31 +134,106 @@ def create_notify_icon(title, message):
     ctypes.windll.shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(nid))
 
 
-def show_current_song():
-    try:
-        playback = rate_limited_spotify_call(sp.current_playback)
-        if playback and playback.get("item"):
-            song = playback["item"]["name"]
-            artists = ", ".join(a["name"] for a in playback["item"]["artists"])
-            threading.Thread(
-                target=create_notify_icon, args=("Now Playing", f"{song} — {artists}"),
-                daemon=True,
-            ).start()
-            logging.info(f"Displayed current song: {song} by {artists}")
-    except Exception as e:
-        logging.error(f"Show current song error: {e}", exc_info=True)
+def notify(message, title="Music Agent"):
+    """Balloon notification, off the hotkey thread — a 5s toast must not delay the next key press."""
+    threading.Thread(target=create_notify_icon, args=(title, message), daemon=True).start()
 
 
-# Hotkey action map: config key -> callable
-HOTKEY_ACTIONS = {
-    "play_pause": play_pause_music,
-    "next_track": skip_to_next,
-    "previous_track": skip_to_previous,
-    "like_unlike": toggle_like_current_song,
-    "show_current": show_current_song,
-}
-
+# --------------------------------------------------------------------------- the controller (= the mode)
 app_config = load_config()
+controller = None
+
+
+def is_configured(cfg):
+    """Does the selected mode have what it needs? Reads the config dict only — no network and no extra
+    files, because this decides whether to show a setup window at launch."""
+    if cfg["mode"] == "cadence":
+        return bool(cfg.get("cadence_session"))
+    return bool(spotify_credentials(cfg)["SPOTIFY_CLIENT_ID"])
+
+
+def run_setup(cfg):
+    """First run (or a copy that lost its credentials): ask which service, then set it up. Returns the
+    chosen mode, or None if the user closed the window."""
+    mode = login_ui.choose_mode(cfg)
+    if mode is None:
+        return None
+    cfg["mode"] = mode
+    try:
+        save_config(cfg)
+    except OSError:
+        pass  # a read-only config dir must not stop the app running for this session
+    if mode == "spotify" and not login_ui.spotify_setup(cfg):
+        return None
+    return mode
+
+
+def build_controller(cfg, setup=True):
+    """Build the object the hotkeys drive. None means "nothing to control": the user closed a setup
+    window, or Spotify mode has no usable credentials.
+
+    `setup` gates the launch-time windows so a Settings reload can rebuild quietly instead of throwing
+    a chooser at someone who just changed a hotkey.
+    """
+    if setup and not is_configured(cfg) and run_setup(cfg) is None:
+        return None
+
+    if cfg["mode"] == "cadence":
+        from cadence import CadenceController
+
+        client = login_ui.build_client(cfg)
+        if not client.is_authenticated():
+            # No session, or it expired/was revoked: this is the "login part" on launch. It appears
+            # once per machine — Cadence re-signs the cookie on every call, so it stays valid.
+            client = login_ui.sign_in(cfg)
+            if client is None:
+                return None
+        return CadenceController(client)
+
+    from spotify_backend import SpotifyConfigError, SpotifyController
+
+    cache_data_dir = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
+    os.makedirs(cache_data_dir, exist_ok=True)
+    try:
+        return SpotifyController(spotify_credentials(cfg), os.path.join(cache_data_dir, ".cache"))
+    except SpotifyConfigError as e:
+        # No longer fatal: a fresh copy legitimately has no Spotify keys, and the fix (enter them, or
+        # switch to Cadence) is one Settings click away — exiting would hide the message with the app.
+        logging.error(str(e))
+        notify(str(e))
+        return None
+    except Exception as e:
+        logging.error(f"Spotify init error: {e}", exc_info=True)
+        notify("Spotify sign-in failed — see the log.")
+        return None
+
+
+def action(name):
+    """Bind one controller method to a hotkey. Wrapped because this runs on the keyboard thread, where
+    an uncaught exception kills that hotkey silently and permanently."""
+    def run():
+        if controller is None:
+            notify("Not signed in — open Settings to choose an account.")
+            return
+        try:
+            message = getattr(controller, name)()
+        except Exception as e:  # noqa: BLE001 — a hotkey must never die on an unexpected error
+            logging.error(f"{name} failed: {e}", exc_info=True)
+            notify("Something went wrong — see the log.")
+            return
+        if message:
+            notify(message, title="Now Playing" if name == "show_current" else "Music Agent")
+    return run
+
+
+# Hotkey action map: config key -> controller method
+HOTKEY_ACTIONS = {
+    "play_pause": action("play_pause"),
+    "next_track": action("next_track"),
+    "previous_track": action("previous_track"),
+    "like_unlike": action("toggle_like"),
+    "show_current": action("show_current"),
+}
 
 
 def setup_hotkeys():
@@ -341,13 +248,20 @@ def setup_hotkeys():
     logging.info("Hotkeys registered: %s", app_config["hotkeys"])
 
 
-def reload_hotkeys():
-    """Unregister all hotkeys, reload config, re-register."""
-    global app_config
+def reload_config():
+    """Settings saved: re-register hotkeys, and rebuild the controller if the account/mode changed."""
+    global app_config, controller
     keyboard.unhook_all_hotkeys()
+    previous = app_config
     app_config = load_config()
     setup_hotkeys()
-    logging.info("Hotkeys reloaded from config.")
+    changed = any(previous.get(k) != app_config.get(k)
+                  for k in ("mode", "cadence_url", "cf_access_client_id", "cf_access_client_secret"))
+    if changed or controller is None:
+        # setup=False: Settings has its own sign-in / credentials buttons, so don't ALSO pop the
+        # first-run chooser at someone who just saved a hotkey.
+        controller = build_controller(app_config, setup=False)
+    logging.info("Config reloaded (mode=%s).", app_config["mode"])
 
 
 def create_tray_icon():
@@ -362,7 +276,7 @@ def create_tray_icon():
     menu = pystray.Menu(
         pystray.MenuItem(
             "Settings",
-            lambda: open_settings(on_save_callback=reload_hotkeys),
+            lambda: open_settings(on_save_callback=reload_config),
         ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Quit", lambda icon, item: quit_app(icon)),
@@ -371,7 +285,7 @@ def create_tray_icon():
     icon = pystray.Icon(
         name="MusicAgent",
         icon=icon_image,
-        title="Music Agent",
+        title=f"Music Agent ({app_config['mode']})",
         menu=menu,
     )
     return icon
@@ -384,6 +298,16 @@ def quit_app(icon):
 
 
 def main():
+    global controller, app_config
+    controller = build_controller(app_config)
+    app_config = load_config()  # setup may have switched the mode; the tray title reads it
+    if controller is None and not is_configured(app_config):
+        # Setup was closed without choosing anything — there is genuinely nothing to control. A
+        # CONFIGURED copy whose controller failed to build (dead token, no network) still goes to the
+        # tray: the fix lives in Settings, and quitting would hide it.
+        logging.info("Setup cancelled — nothing to control, exiting.")
+        sys.exit(0)
+
     setup_hotkeys()
 
     # Run keyboard listener on a daemon thread

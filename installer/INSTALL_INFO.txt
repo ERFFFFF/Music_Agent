@@ -1,17 +1,21 @@
-Music Agent - Spotify Playback Controller
+Music Agent - Playback Controller
 
-Before installing, make sure you have:
+This installer only copies files. You choose how to control your
+music the first time you launch the app:
 
-1. A Spotify account (free or premium)
-2. A Spotify Developer app created at:
-   https://developer.spotify.com/dashboard/
+  Cadence account
+     Sign in to your Cadence server (the same account you use in
+     the web player). Nothing else to set up, and it works on a
+     network where Spotify itself is blocked.
+     Keep a Cadence tab open in your browser - it is what performs
+     the commands.
 
-3. Your Client ID and Client Secret ready
-   (found in your Spotify app's Settings page)
+  Spotify app
+     The app asks for a Spotify Client ID and Client Secret, which
+     you create at https://developer.spotify.com/dashboard/ , and
+     saves them to a file for you. On first use a browser window
+     opens once for Spotify authorization.
 
-The installer will ask for these credentials and verify
-them with Spotify before completing the installation.
-
-Note: On first launch, a browser window will open once for
-Spotify authorization. After that, the app runs silently in
-the background and responds to keyboard shortcuts.
+Either way the app then runs silently in the background and
+responds to your keyboard shortcuts. You can switch accounts later
+from the tray icon: right-click - Settings.

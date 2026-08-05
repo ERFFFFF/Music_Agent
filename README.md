@@ -6,11 +6,23 @@
 
 # Music Control Agent
 
-A lightweight Spotify agent that enables you to control your Spotify playback with customizable keybinds. Easily skip tracks, pause, play, like, unlike, or go back to the previous song with simple keyboard shortcuts.
+A lightweight agent that controls your music with global keybinds — skip, pause, like, or jump back
+without leaving whatever you're doing.
+
+It drives **either** of two things, picked in Settings:
+
+| Mode | What it controls | What it needs |
+|------|------------------|---------------|
+| **Cadence** (default) | Your [Cadence](https://github.com/ERFFFFF/cadence) account — the command is performed by your open Cadence browser tab | Just your Cadence login |
+| **Spotify** | This machine's Spotify Connect device, via the Web API | A Spotify developer app (the Client ID + Secret, asked for on first launch) |
+
+**Cadence mode is the portable one**: no developer app, no secrets baked in at build time, no installer —
+one `MusicAgent.exe` you can copy anywhere, sign in once, done. It also works on a network where
+Spotify itself is blocked but Cadence (plain HTTPS) is not, which is the whole reason it exists.
 
 ## 🌟 Project Goal
 
-Create an agent that provides seamless control over Spotify playback using keybinds.
+Create an agent that provides seamless control over your music using keybinds.
 
 ## 🎧 Features
 
@@ -18,7 +30,69 @@ Create an agent that provides seamless control over Spotify playback using keybi
 - **Pause/Play**: Toggle between pausing and playing the current track.
 - **Like/Unlike Songs**: Instantly like or unlike the currently playing song.
 - **Previous Song**: Return to the previous track with a simple keypress.
-- **Wake Device**: Transfer playback to an inactive Spotify Connect device (the Spotify client must be running on the target device).
+- **Show Current Song**: A notification with what's playing right now.
+- **Wake Device** *(Spotify mode)*: Transfer playback to an inactive Spotify Connect device (the Spotify client must be running on the target device).
+
+## 🚦 First launch — pick your account
+
+However you got the app (portable exe or installer), the **first launch asks how you want to control
+your music**:
+
+- **Cadence account** → a sign-in window (server, username, password).
+- **Spotify app** → a form for your **Client ID + Client Secret**, saved into `cadence_config.txt` beside the app.
+
+Both are remembered, so it only asks once. Switch later from the tray icon → **Settings** → *Controls*,
+where the same two windows are one click away (*Sign in… / Sign out*, *Credentials…*).
+
+## 🎵 Cadence mode (portable, no install)
+
+1. Grab `MusicAgent.exe` (or build it: `.\build_portable.ps1`) and put it wherever you like.
+2. Run it, choose **Cadence account**, then fill in **your own server's address** (there is no default
+   baked into the app) and sign in with the account you use in the web player. Cadence has no
+   self-registration, so this is an account the operator made for you.
+3. That's it: it goes to the system tray and the hotkeys work.
+
+Everything the app remembers lives in **one file next to it — `cadence_config.txt`**: the mode, your
+Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. Copy that
+file with the exe and the new machine is already set up. (If the folder is read-only — an installed copy
+under Program Files — it falls back to `%LOCALAPPDATA%\MusicAgent`.)
+
+> **Treat `cadence_config.txt` like a password file.** It holds a live Cadence session token; anyone
+> with the file can control your player until you hit Sign out. It's written user-only where the OS
+> supports it, and it's git-ignored here.
+
+Using the app keeps you signed in: each hotkey refreshes the session, so it only expires after ~7 days
+of not touching it at all.
+
+**Keep a Cadence tab open.** Cadence plays audio in the browser: the tab owns the queue and the audio
+element, so a hotkey queues an intent that the tab performs within about a second. If no tab is open the
+agent says so rather than silently doing nothing.
+
+**Cloudflare Access?** If your Cadence sits behind it — mine does — a request without a service
+token is answered with a `302` to the Access login page (verified), which no background app can
+complete. So:
+
+1. Cloudflare Zero Trust → **Access → Service Auth → Create Service Token**; copy the Client ID and
+   Client Secret (shown once).
+2. Open the Cadence application's Access policy and add a rule: *Action: Service Auth*, include
+   **Service Token** → the one you just made.
+3. Click the **⚙ button in the top-right corner of the sign-in window** and paste both values in.
+   (Same dialog later from the tray → Settings → *Controls* → ⚙, so a rotated token doesn't mean
+   signing out.)
+
+The sign-in window says whether a token is set, and without one the app names Access as the blocker
+rather than failing vaguely. A Cadence server that isn't behind Access needs none of this — leave the
+fields empty.
+
+**Waking up.** Cadence stops itself after ~30 minutes idle and takes a few seconds to come back; a
+hotkey pressed in that window says "Cadence is waking up — try again in a few seconds". (If it was
+asleep, no browser tab was open either, so there was nothing to control regardless.)
+
+### Building the portable exe
+
+```powershell
+.\build_portable.ps1      # -> dist\MusicAgent.exe
+```
 
 ## 🔗 Useful Links
 
@@ -32,11 +106,15 @@ Download `MusicAgentSetup.exe` from the [Releases](https://github.com/ERFFFFF/Mu
 The installer will:
 
 1. Ask where to install the app
-2. Ask for your Spotify **Client ID** and **Client Secret** (see [How to get credentials](#how-to-get-spotify-credentials) below)
-3. Optionally add the app to Windows startup
-4. Create Start Menu shortcuts and an uninstaller
+2. Optionally add the app to Windows startup
+3. Create Start Menu shortcuts and an uninstaller
 
-On first launch, a browser window opens once for Spotify authorization. After that, the app runs silently in the background.
+It no longer asks for Spotify credentials: **the app asks on first launch and supports either account**
+(see [First launch](#-first-launch--pick-your-account)). That's what lets an installed copy use Cadence
+too — the old installer could only set up Spotify.
+
+In Spotify mode, a browser window opens once for Spotify authorization after you enter your
+credentials. After that, the app runs silently in the background.
 
 ### How to get Spotify credentials
 
@@ -55,31 +133,22 @@ The device is auto-discovered at startup — the agent picks the first available
 pip install -r requirements.txt
 ```
 
-### 2. Create and configure the .env file
+### 2. Configure
 
-Copy the template and fill in your values:
+Nothing to create by hand: run the app and it asks (Cadence sign-in, or Spotify Client ID + Secret),
+then writes **`cadence_config.txt`** next to `main.py`. That one file holds the mode, the Cadence URL
+and session, the Cloudflare token, the Spotify keys and the hotkeys — delete it to start clean.
 
-```bash
-cp .env.template .env
-```
+A legacy `.env` (or the old `config.json` / `cadence_session.json`) is read once and migrated into it,
+so an existing install keeps its settings. `.env.template` is kept for reference only.
 
-#### .env.template
-
-```env
-SPOTIFY_CLIENT_ID=your_client_id_here
-SPOTIFY_CLIENT_SECRET=your_client_secret_here
-SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
-```
-
-#### git-crypt
-
-The `.env` file is encrypted via [git-crypt](https://github.com/AGWA/git-crypt) so secrets are safe in the repository. If you are a collaborator, unlock with:
+Self-checks, runnable on any OS:
 
 ```bash
-git-crypt unlock
+python config.py     # config paths, round-trip, migration, corrupt-file fallback
+python cadence.py    # cookie handling + "is this a wall or an answer?" detection
+python cadence.py https://your-cadence user password    # ...plus a live round trip
 ```
-
-If you don't have the key, create your own `.env` from the `.env.template` above.
 
 ### 3. Build the Executable
 

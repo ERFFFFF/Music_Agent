@@ -1,11 +1,10 @@
 import os
 import sys
 import threading
-import logging
 import customtkinter as ctk
 import keyboard
 
-from config import load_config, save_config, DEFAULT_HOTKEYS
+from config import load_config, save_config, DEFAULT_HOTKEYS, MODES
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -27,7 +26,7 @@ _window_lock = threading.Lock()
 
 
 def _find_icon():
-    """Locate poulet.ico using the same pattern as main.py's find_env()."""
+    """Locate poulet.ico: next to the exe first, then the PyInstaller bundle."""
     exe_dir = os.path.dirname(sys.executable)
     beside_exe = os.path.join(exe_dir, "poulet.ico")
     if os.path.isfile(beside_exe):
@@ -106,6 +105,8 @@ class SettingsWindow:
             font=ctk.CTkFont(size=13),
             text_color=("gray50", "gray60"),
         ).pack(anchor="w", pady=(4, 0))
+
+        self._build_account_card(main_frame)
 
         # Keybinds card
         card = ctk.CTkFrame(main_frame, corner_radius=12)
@@ -226,6 +227,97 @@ class SettingsWindow:
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._save,
         ).pack(side="right", padx=(0, 10))
+
+    def _build_account_card(self, parent):
+        """Which service the hotkeys drive, and the Cadence sign-in that goes with it.
+
+        The mode is applied on Save with everything else; signing in is its own button because it opens
+        a window and talks to the network — that shouldn't be tangled up with saving hotkeys.
+        """
+        card = ctk.CTkFrame(parent, corner_radius=12)
+        card.pack(fill="x", pady=(0, 16))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(16, 6))
+        ctk.CTkLabel(row, text="Controls", font=ctk.CTkFont(size=14), width=160,
+                     anchor="w").pack(side="left")
+        self.mode_var = ctk.StringVar(value=self.config.get("mode", "cadence"))
+        ctk.CTkOptionMenu(
+            row, values=list(MODES), variable=self.mode_var, width=200, height=34,
+            corner_radius=8, font=ctk.CTkFont(size=13), command=lambda _v: self._refresh_account(),
+        ).pack(side="left", padx=(10, 10))
+        self.account_btn = ctk.CTkButton(row, text="Sign in…", width=80, height=34, corner_radius=8,
+                                         font=ctk.CTkFont(size=13), command=self._cadence_sign_in)
+        self.account_btn.pack(side="left")
+        # Same gear as the sign-in screen. Without it, changing a rotated service token would mean
+        # signing out just to get the login window back.
+        self.cf_btn = ctk.CTkButton(row, text="⚙", width=36, height=34, corner_radius=8,
+                                    fg_color="transparent", hover_color=("gray80", "gray25"),
+                                    text_color=("gray30", "gray75"), font=ctk.CTkFont(size=16),
+                                    command=self._cloudflare)
+        self.cf_btn.pack(side="left", padx=(8, 0))
+
+        self.account_hint = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=12),
+                                         text_color=("gray50", "gray60"), wraplength=440, justify="left")
+        self.account_hint.pack(anchor="w", padx=20, pady=(0, 14))
+        self._refresh_account()
+
+    def _refresh_account(self):
+        """Say what the selected mode needs and whether it has it. Local checks only (a file exists or
+        it doesn't) so opening Settings never blocks on a request to a sleeping server."""
+        if self.mode_var.get() == "cadence":
+            signed_in = bool(self.config.get("cadence_session"))
+            self.account_btn.configure(text="Sign out" if signed_in else "Sign in…", state="normal")
+            self.cf_btn.pack(side="left", padx=(8, 0))   # Cloudflare token is a Cadence-only concern
+            has_token = bool(self.config.get("cf_access_client_id"))
+            self.account_hint.configure(text=(
+                "Cadence: hotkeys are sent to your Cadence account and performed by the open Cadence "
+                "tab in your browser — keep one open. " +
+                ("Signed in. " if signed_in else "Not signed in yet. ") +
+                ("⚙ Cloudflare Access token set." if has_token else "⚙ No Cloudflare Access token.")
+            ))
+        else:
+            has_env = bool(self.config.get("spotify_client_id"))
+            self.account_btn.configure(text="Credentials…", state="normal")
+            self.cf_btn.pack_forget()
+            self.account_hint.configure(text=(
+                "Spotify: hotkeys drive this machine's Spotify Connect device, using a Spotify app's "
+                "Client ID and Secret. " +
+                ("Credentials saved." if has_env else "No credentials yet — click Credentials.")
+            ))
+
+    def _cadence_sign_in(self):
+        """The account button: sign in / sign out for Cadence, or the credentials form for Spotify.
+        login_ui is imported here rather than at module load so the settings window keeps no
+        import-time dependency on the network client."""
+        import login_ui
+
+        if self.mode_var.get() == "spotify":
+            self._with_hidden_window(lambda: login_ui.spotify_setup(self.config))
+            return
+        if self.account_btn.cget("text") == "Sign out":
+            login_ui.build_client(self.config).forget()
+            self._refresh_account()
+            return
+        self._with_hidden_window(lambda: login_ui.sign_in(self.config))
+
+    def _cloudflare(self):
+        """Cloudflare Access service token — a dialog over this window, not a second root."""
+        import login_ui
+
+        login_ui.cloudflare_dialog(self.root, self.config)
+        self._refresh_account()
+
+    def _with_hidden_window(self, action):
+        """Run a setup window with this one out of the way — each is its own CTk root, and stacking two
+        of them makes both misbehave."""
+        self.root.withdraw()
+        try:
+            action()
+        finally:
+            self.root.deiconify()
+            self.config = load_config()   # the setup windows save settings of their own — pick them up
+            self._refresh_account()
 
     def _start_capture(self, action_id):
         """Open a modal overlay that captures a hotkey press."""
@@ -376,6 +468,7 @@ class SettingsWindow:
             seen[hk] = aid
 
         self.config["hotkeys"] = new_hotkeys
+        self.config["mode"] = self.mode_var.get()
         try:
             save_config(self.config)
         except OSError:
