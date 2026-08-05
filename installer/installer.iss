@@ -3,7 +3,7 @@
 ; Requires: PyInstaller build output in dist\Music Agent\
 
 #define MyAppName "Music Agent"
-#define MyAppVersion "3.0.0"
+#define MyAppVersion "4.0.0"
 #define MyAppPublisher "erfffff"
 #define MyAppURL "https://github.com/ERFFFFF/Music_Agent"
 #define MyAppExeName "Music Agent.exe"
