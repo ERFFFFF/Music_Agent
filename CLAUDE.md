@@ -56,8 +56,8 @@ config.py               # THE config: cadence_config.txt (paths, load/save, lega
 build_portable.ps1      # One-file, no-installer build (dist\MusicAgent.exe)
 discover_device_id.py   # Utility to list Spotify Connect devices
 cadence_config.txt      # (generated, gitignored) mode + Cadence URL/session + Cloudflare + Spotify + hotkeys
-.env / .env.template    # legacy Spotify credentials — read once and migrated, no longer written
-.gitattributes          # git-crypt encryption rules
+.env.example            # legacy Spotify credential format, for migrating an old install only
+                        # (a real .env is gitignored — never commit one)
 requirements.txt        # Python dependencies
 poulet.ico              # App icon for exe and installer
 Music Agent.spec        # PyInstaller build spec (gitignored)
@@ -114,6 +114,10 @@ The first launch opens a browser for Spotify OAuth. After that, the token auto-r
 
 - Never store the `.cache` token file relative to the `.env` path — it ends up in PyInstaller's temp dir and gets deleted.
 - `sp.transfer_playback()` takes `device_id` (string), not `device_ids` (list).
-- `.env` is encrypted by git-crypt — run `git-crypt unlock` after clone if you have the key.
+- **There is no git-crypt here any more.** `.gitattributes` declared a git-crypt filter for `.env`, but
+  the committed blobs were plaintext the whole time — the Spotify Client ID/Secret sat in the PUBLIC
+  history until 2026-08-05, when `.env` was purged from every commit. Anything that was in it must be
+  treated as compromised and rotated; purging history does not un-publish it.
+  `.env` is gitignored now; credentials live in `cadence_config.txt` (also gitignored), never in git.
 - Environment variable keys are `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`.
 - The installer writes `.env` next to the exe. `find_env()` checks there first before `_MEIPASS`.

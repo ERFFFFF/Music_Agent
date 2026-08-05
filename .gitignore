@@ -1,3 +1,7 @@
+# Secrets — never commit a real one. (.env WAS committed in plaintext until 2026-08-05; the
+# git-crypt filter in .gitattributes never actually encrypted it. See .env.example.)
+.env
+
 # Ignore all .cache files
 .cache
 
