@@ -17,7 +17,7 @@ It drives **either** of two things, picked in Settings:
 | **Spotify** | This machine's Spotify Connect device, via the Web API | A Spotify developer app (the Client ID + Secret, asked for on first launch) |
 
 **Cadence mode is the portable one**: no developer app, no secrets baked in at build time, no installer —
-one `MusicAgent.exe` you can copy anywhere, sign in once, done. It also works on a network where
+one `MusicAgent_portable.exe` you can copy anywhere, sign in once, done. It also works on a network where
 Spotify itself is blocked but Cadence (plain HTTPS) is not, which is the whole reason it exists.
 
 ## 🌟 Project Goal
@@ -46,7 +46,7 @@ where the same two windows are one click away (*Sign in… / Sign out*, *Credent
 
 ## 🎵 Cadence mode (portable, no install)
 
-1. Grab `MusicAgent.exe` (or build it: `.\build_portable.ps1`) and put it wherever you like.
+1. Grab `MusicAgent_portable.exe` (or build it: `.\build_portable.ps1`) and put it wherever you like.
 2. Run it, choose **Cadence account**, then fill in **your own server's address** (there is no default
    baked into the app) and sign in with the account you use in the web player. Cadence has no
    self-registration, so this is an account the operator made for you.
@@ -91,7 +91,7 @@ asleep, no browser tab was open either, so there was nothing to control regardle
 ### Building the portable exe
 
 ```powershell
-.\build_portable.ps1      # -> dist\MusicAgent.exe
+.\build_portable.ps1      # -> dist\MusicAgent_portable.exe
 ```
 
 ## 🔗 Useful Links

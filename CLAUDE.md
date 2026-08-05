@@ -53,7 +53,7 @@ cadence.py              # Cadence mode: CadenceClient (HTTP/session) + CadenceCo
 login_ui.py             # Cadence sign-in window (shown on launch when there's no session)
 spotify_backend.py      # Spotify mode: SpotifyController (device discovery + Web API actions)
 config.py               # THE config: cadence_config.txt (paths, load/save, legacy migration)
-build_portable.ps1      # One-file, no-installer build (dist\MusicAgent.exe)
+build_portable.ps1      # One-file, no-installer build (dist\MusicAgent_portable.exe)
 discover_device_id.py   # Utility to list Spotify Connect devices
 cadence_config.txt      # (generated, gitignored) mode + Cadence URL/session + Cloudflare + Spotify + hotkeys
 .env.example            # legacy Spotify credential format, for migrating an old install only
