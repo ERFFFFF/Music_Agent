@@ -21,6 +21,8 @@ cadence_config.txt
 cadence_config.txt.tmp
 config.json
 cadence_session.json
-MusicAgent.spec
+MusicAgent_portable.spec
+MusicAgent_cli.spec
+
 # Tool caches
 .ruff_cache/

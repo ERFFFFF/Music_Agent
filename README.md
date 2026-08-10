@@ -17,7 +17,7 @@ It drives **either** of two things, picked in Settings:
 | **Spotify** | This machine's Spotify Connect device, via the Web API | A Spotify developer app (the Client ID + Secret, asked for on first launch) |
 
 **Cadence mode is the portable one**: no developer app, no secrets baked in at build time, no installer —
-one `MusicAgent.exe` you can copy anywhere, sign in once, done. It also works on a network where
+one `MusicAgent_portable.exe` you can copy anywhere, sign in once, done. It also works on a network where
 Spotify itself is blocked but Cadence (plain HTTPS) is not, which is the whole reason it exists.
 
 ## 🌟 Project Goal
@@ -49,7 +49,7 @@ where the same two windows are one click away (*Sign in… / Sign out*, *Credent
 
 ## 🎵 Cadence mode (portable, no install)
 
-1. Grab `MusicAgent.exe` (or build it: `.\build_portable.ps1`) and put it wherever you like.
+1. Grab `MusicAgent_portable.exe` (or build it: `.\build_portable.ps1`) and put it wherever you like.
 2. Run it, choose **Cadence account**, then fill in **your own server's address** (there is no default
    baked into the app) and sign in with the account you use in the web player. Cadence has no
    self-registration, so this is an account the operator made for you.
@@ -60,18 +60,21 @@ where the same two windows are one click away (*Sign in… / Sign out*, *Credent
 > warns on tagged programs it doesn't recognise yet. It's about where the file came from, not about
 > what's in it: an exe you build yourself with `build_portable.ps1` is never tagged and never asks.
 > To clear it up front instead: right-click the exe → Properties → tick **Unblock** → OK, or
-> `Unblock-File .\MusicAgent.exe` in PowerShell. Both just delete that tag from that one file — no
+> `Unblock-File .\MusicAgent_portable.exe` in PowerShell. Both just delete that tag from that one file — no
 > admin rights, nothing changed on your PC, no SmartScreen setting touched. Unblocking the `.zip`
 > *before* extracting saves doing it to the exe afterwards.
 
 Everything the app remembers lives in **one file next to it — `cadence_config.txt`**: the mode, your
-Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. Copy that
-file with the exe and the new machine is already set up. (If the folder is read-only — an installed copy
-under Program Files — it falls back to `%LOCALAPPDATA%\MusicAgent`.)
+Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. (If the
+folder is read-only — an installed copy under Program Files — it falls back to `%LOCALAPPDATA%\MusicAgent`.)
 
-> **Treat `cadence_config.txt` like a password file.** It holds a live Cadence session token; anyone
-> with the file can control your player until you hit Sign out. It's written user-only where the OS
-> supports it, and it's git-ignored here.
+> **The credentials in it are encrypted, not plaintext.** The session token, URL and API keys are
+> sealed with Windows DPAPI, which ties them to *your Windows account*: another user on the PC, or
+> anyone who copies the file off it, gets unreadable blobs. Only `mode` and your hotkeys stay readable.
+
+That protection is also why the file doesn't travel. Move the exe to **another PC or another Windows
+account** and the secrets won't decrypt there, so it asks you to sign in once on the new machine —
+your shortcuts and mode come across intact. Sign out in Settings clears the session either way.
 
 Using the app keeps you signed in: each hotkey refreshes the session, so it only expires after ~7 days
 of not touching it at all.
@@ -128,8 +131,8 @@ pip install -r requirements-gui.txt    # adds customtkinter + pystray + Pillow, 
 ### Building the portable exe
 
 ```powershell
-.\build_portable.ps1           # -> dist\MusicAgent.exe       tray app
-.\build_portable.ps1 -Cli      # -> dist\MusicAgent-cli.exe   console app, no GUI libraries bundled
+.\build_portable.ps1           # -> dist\MusicAgent_portable.exe   tray app
+.\build_portable.ps1 -Cli      # -> dist\MusicAgent_cli.exe        console app, no GUI libraries
 ```
 
 ## 🔗 Useful Links

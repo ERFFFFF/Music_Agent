@@ -193,6 +193,61 @@ def credential_write_does_not_clobber():
         config.app_dir = real_app_dir
 
 
+def credentials_encrypted_at_rest():
+    """Every credential really is sealed on the way out — including the ones added since.
+
+    DPAPI is a no-op off Windows (`_dpapi` returns None), so nothing else here exercises the encrypt/
+    decrypt path at all. This stands in a reversible fake for it, which is enough to prove the wiring:
+    that SECRET_FIELDS covers every credential in DEFAULTS, that save_config seals all of them, that
+    load_config unseals them, and that mode/hotkeys deliberately stay readable.
+    """
+    import config
+
+    # Any field holding a credential must be in SECRET_FIELDS. Named explicitly rather than pattern-
+    # matched, so adding one to DEFAULTS and forgetting to seal it fails right here.
+    credentials = {"cadence_url", "cadence_session", "cf_access_client_id", "cf_access_client_secret",
+                   "spotify_client_id", "spotify_client_secret", "spotify_refresh_token"}
+    assert credentials <= set(config.SECRET_FIELDS), \
+        f"not sealed at rest: {sorted(credentials - set(config.SECRET_FIELDS))}"
+    assert "hotkeys" not in config.SECRET_FIELDS and "mode" not in config.SECRET_FIELDS
+
+    fake = lambda protect, data: (data[::-1] if protect else data[::-1])   # noqa: E731 — reversible
+    real_app_dir = config.app_dir
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config.app_dir = lambda: d
+            with mock.patch.object(config, "_dpapi", fake):
+                cfg = config.load_config()
+                # distinctive values: a plain word like "refresh" would also match the KEY name
+                cfg.update({"cadence_session": "SESSION-VALUE-A", "mode": "spotify",
+                            "spotify_refresh_token": "REFRESHTOKEN-VALUE-B",
+                            "spotify_client_secret": "CLIENTSECRET-VALUE-C"})
+                cfg["hotkeys"]["play_pause"] = "f8"
+                config.save_config(cfg)
+
+                raw = json.load(open(config.config_path()))
+                for key in config.SECRET_FIELDS:
+                    if raw[key]:
+                        assert raw[key].startswith(config.ENC_PREFIX), f"{key} written in the clear"
+                for secret in ("SESSION-VALUE-A", "REFRESHTOKEN-VALUE-B", "CLIENTSECRET-VALUE-C"):
+                    assert secret not in open(config.config_path()).read(), f"{secret!r} is on disk"
+                assert raw["mode"] == "spotify" and raw["hotkeys"]["play_pause"] == "f8"
+
+                back = config.load_config()
+                assert back["cadence_session"] == "SESSION-VALUE-A"
+                assert back["spotify_refresh_token"] == "REFRESHTOKEN-VALUE-B"
+                assert back["spotify_client_secret"] == "CLIENTSECRET-VALUE-C"
+
+                # update_config has to survive the round trip too — it reads, sets one field, writes
+                config.update_config("spotify_refresh_token", "rotated", back)
+                assert config.load_config()["spotify_refresh_token"] == "rotated"
+                assert config.load_config()["cadence_session"] == "SESSION-VALUE-A", "clobbered a sibling"
+                assert json.load(open(config.config_path()))["spotify_refresh_token"].startswith(
+                    config.ENC_PREFIX), "update_config wrote a credential in the clear"
+    finally:
+        config.app_dir = real_app_dir
+
+
 def corrupt_config_never_raises():
     """load_config's contract: any garbage on disk yields defaults rather than stopping the launch."""
     import config
@@ -274,6 +329,7 @@ def main():
     check("cadence: login, restart, sign out", cadence_login)
     check("cadence: a wrong password saves nothing", cadence_login_refused)
     check("a credential write never reverts a settings save", credential_write_does_not_clobber)
+    check("every credential is encrypted at rest", credentials_encrypted_at_rest)
     check("a corrupt config yields defaults, never a crash", corrupt_config_never_raises)
     check("spotify: consent on a real socket", lambda: spotify_consent(8899))
     check("spotify: a mismatched state is refused", lambda: spotify_consent(8902, wrong_state=True))

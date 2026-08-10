@@ -23,6 +23,7 @@ edit never triggers the chooser.
 - **URL convention — the one that bites**: Cadence's public host is its Next UI, which rewrites `/api/:path*` to the backend root, stripping exactly ONE `/api`. So a backend route that is already `/api/...` needs it twice from outside (`/api/api/me`) and an unprefixed one needs it once (`/api/login`). `_request()` prepends `/api` to the backend's own path; don't "fix" it.
 - **Login sends an `Origin` header.** Cadence's `/login` rejects a request carrying neither Origin nor Referer (login-CSRF guard). A native client has to state its origin; this is not a bypass.
 - **One config file**: `cadence_config.txt` (JSON) beside the app — mode, Cadence URL + **session token**, Cloudflare token, Spotify keys, hotkeys. `config.app_dir()` = exe folder (frozen) or source folder (dev); AppData only when that is read-only. Replaced config.json + cadence_session.json + .env, which are migrated in once and then ignored. Written 0600; the session token in it IS a credential.
+- **Credentials are encrypted at rest with Windows DPAPI** (`config.SECRET_FIELDS`, `enc:<base64>` values): URL, session, Cloudflare and Spotify keys. `mode` and `hotkeys` stay plaintext so a copied config still looks sane and keeps its shortcuts. `CryptProtectData` keys the blob to the **Windows account**, so the trade-off is deliberate: no launch password and no key inside the exe, at the cost of secrets not surviving a move to another PC/user — `_decrypt` returns `""` there, `is_configured()` reads that as "not signed in", and the user signs in once. `load_config` re-encrypts a plaintext file on sight, so an upgraded install doesn't leave its old token lying around. `python config.py` covers all of it.
 - **Session, not password**: the signed cookie round-trips through the config (`CadenceClient(session=…, on_session=…)`, wired by `cadence.client_from_config`). The password is never stored. **Starlette only re-issues the cookie when the session is MODIFIED** (verified in 1.3.1's source; an authenticated GET returns no Set-Cookie) — so Cadence's `_touch_session` marks it modified on `/api/remote/command|state`, which is what makes the agent's saved session slide instead of dying 7 days after login. Not done on `/api/remote/pending` (the browser's 1/s poll).
 - **Cookie domain is load-bearing**: `_load_cookie` sets the restored cookie WITH the host domain. Without it the jar ends up with two entries named `session` (restored under domain "", server-issued under the host) and `cookies.get()` raises `CookieConflictError` — every hotkey dead on the second launch. `_cookie()` also reads defensively. `python cadence.py` runs the offline self-check that covers this.
 - **`live` in the response is load-bearing**: it means a tab drained recently. False → the command will expire unperformed, and the agent says "No Cadence tab is open" instead of faking success.
@@ -61,8 +62,8 @@ cadence.py              # Cadence mode: CadenceClient (HTTP/session) + CadenceCo
 login_ui.py             # Cadence sign-in window (shown on launch when there's no session)
 settings_ui.py          # Settings window (mode, account, hotkey capture)
 spotify_backend.py      # Spotify mode: SpotifyController (OAuth + Web API actions), requests only
-config.py               # THE config: cadence_config.txt (paths, load/save, legacy migration, ACTIONS)
-build_portable.ps1      # One-file build; -Cli switches to the GUI-free console exe
+config.py               # THE config: cadence_config.txt (DPAPI at rest, load/save, migration, ACTIONS)
+build_portable.ps1      # dist\MusicAgent_portable.exe; -Cli builds the GUI-free MusicAgent_cli.exe
 cadence_config.txt      # (generated, gitignored) mode + Cadence URL/session + Cloudflare + Spotify + hotkeys
 .env.example            # legacy Spotify credential format, for migrating an old install only
                         # (a real .env is gitignored — never commit one)
@@ -119,6 +120,10 @@ Browser consent runs on the **calling thread, which is the hotkey thread**. Ever
 **Known, not fixed:** the GUI's Settings → *Credentials…* does not authorise up-front, so on that path the *first* hotkey press still blocks for up to `CONSENT_TIMEOUT` while the browser is open. Doing it inline there would freeze the Settings window's mainloop for the same duration, which is worse; the real fix is a non-blocking consent (thread + a "waiting for Spotify" state), and it needs testing on Windows.
 
 ### Config writes
+
+**Any new credential field must be added to `SECRET_FIELDS`**, or it sits in plaintext next to six encrypted siblings. `spotify_refresh_token` is in it for exactly that reason. `selftest.py` asserts the coverage against a named list, so adding a credential to `DEFAULTS` and forgetting to seal it fails the check rather than shipping.
+
+`update_config` composes with DPAPI for free: `load_config` decrypts, `save_config` encrypts, so the dict callers hold is always plaintext and the file is always sealed.
 
 **Long-lived objects must persist through `config.update_config(key, value, cfg)`, never `save_config(cfg)`.** A `CadenceClient` re-saves its sliding cookie and a Spotify `_Auth` rotates its refresh token minutes or hours after being constructed; writing their captured dict reverted whatever Settings saved in between. Measured: one cookie rotation put an old hotkey back on disk. `update_config` re-reads, sets one field, writes. It deliberately does **not** resurrect unsaved in-memory edits — every caller saves before signing in.
 

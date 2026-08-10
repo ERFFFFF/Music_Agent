@@ -18,13 +18,36 @@ Write-Host "Cleaning previous build..." -ForegroundColor Cyan
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build
 
 # Step 2: PyInstaller build
+#
+# Flags, not a checked-in .spec. The old "Music Agent.spec" carried datas=[('.\.env', '.')] from when
+# the installer shipped Spotify credentials: every build copied THIS machine's .env into _internal\,
+# and [Files] then shipped it to every user who ran the installer. The app asks for credentials at
+# first launch now (config.py), so nothing secret belongs in the bundle. PyInstaller rewrites the
+# .spec from these flags on every run, so there is no stale file left to re-poison the build.
 Write-Host "Building with PyInstaller..." -ForegroundColor Cyan
-py -m PyInstaller "Music Agent.spec"
+py -m PyInstaller `
+    --onedir `
+    --noconsole `
+    --noconfirm `
+    --name "Music Agent" `
+    --icon "poulet.ico" `
+    --add-data "poulet.ico;." `
+    --hidden-import "pystray._win32" `
+    main.py
 if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller build failed."
     exit 1
 }
 Write-Host "PyInstaller build complete." -ForegroundColor Green
+
+# Step 2b: refuse to package a secret. The .env leak above shipped in v3.0.0 unnoticed because nothing
+# ever looked at what went into _internal\ - this is that look.
+$Leaked = Get-ChildItem -Path "dist\Music Agent" -Recurse -Force -File |
+    Where-Object { $_.Name -eq ".env" -or $_.Name -like "*.env" -or $_.Name -eq "cadence_config.txt" }
+if ($Leaked) {
+    Write-Error "Refusing to package - credential files in the build output: $($Leaked.FullName -join ', ')"
+    exit 1
+}
 
 # Step 3: Find Inno Setup compiler
 $InnoPaths = @(
