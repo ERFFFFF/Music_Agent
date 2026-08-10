@@ -16,16 +16,11 @@ import threading
 
 import customtkinter as ctk
 
-from cadence import CadenceError, client_from_config
+from cadence import CadenceError, client_from_config, normalize_url
 from config import (DEFAULT_REDIRECT_URI, config_path, load_config, save_config,
                     save_spotify_credentials)
 
 _lock = threading.Lock()
-
-
-def build_client(cfg=None):
-    """The saved-settings client (cadence.client_from_config), defaulting to the config on disk."""
-    return client_from_config(cfg if cfg is not None else load_config())
 
 
 class LoginWindow:
@@ -71,8 +66,8 @@ class LoginWindow:
 
         # The values the gear dialog edits. Held as vars (not widgets) so _submit reads one place
         # whether or not the dialog was ever opened.
-        self.cf_id = ctk.StringVar(value=self.cfg.get("cf_access_client_id", ""))
-        self.cf_secret = ctk.StringVar(value=self.cfg.get("cf_access_client_secret", ""))
+        self.cf_id = ctk.StringVar(master=self.root, value=self.cfg.get("cf_access_client_id", ""))
+        self.cf_secret = ctk.StringVar(master=self.root, value=self.cfg.get("cf_access_client_secret", ""))
         self.cf_note = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=11),
                                     text_color=("gray55", "gray55"))
         self.cf_note.pack(anchor="w", pady=(6, 10))
@@ -126,7 +121,7 @@ class LoginWindow:
         self.submit.configure(state="disabled", text="Signing in…")
         self.root.update_idletasks()
 
-        url = _normalize_url(self.url.get())
+        url = normalize_url(self.url.get())
         if not url:
             self.error.configure(text="Enter the address of your Cadence server.")
             self.submit.configure(state="normal", text="Sign in")
@@ -143,7 +138,7 @@ class LoginWindow:
         except OSError:
             pass  # a read-only config dir must not block signing in for this session
 
-        client = build_client(self.cfg)
+        client = client_from_config(self.cfg)
         try:
             me = client.login(self.user.get().strip(), self.password.get())
         except CadenceError as e:
@@ -377,25 +372,22 @@ def cloudflare_dialog(parent, cfg, id_var=None, secret_var=None):
 
 
 def _field(parent, label, value, show=None, placeholder=None):
-    """One labelled entry row, shared by every window here."""
+    """One labelled entry row, shared by every window here.
+
+    `master=row` is not optional. A StringVar with no master attaches to tkinter's `_default_root`,
+    which is whichever root was created FIRST and is only released when that root is destroyed. Opened
+    from the tray, the Settings root is merely withdrawn, so the variable ends up owned by a different
+    Tcl interpreter than the entry widget: the field renders blank and nothing typed into it is ever
+    read back. At launch the setup windows destroy each root before the next opens, which is why this
+    only ever went wrong via Settings.
+    """
     row = ctk.CTkFrame(parent, fg_color="transparent")
     row.pack(fill="x", padx=20, pady=6)
     ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=13), width=120, anchor="w").pack(side="left")
-    var = ctk.StringVar(value=value)
+    var = ctk.StringVar(master=row, value=value)
     ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8, show=show,
                  placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
     return var
-
-
-def _normalize_url(raw):
-    """Accept what people actually type. "cadence.example.com" is a URL to a human but not to requests,
-    so assume https rather than failing with a connection error they can't act on."""
-    url = (raw or "").strip().rstrip("/")
-    if url and "://" not in url:
-        url = "https://" + url
-    return url
-
-
 
 
 def choose_mode(cfg=None):
@@ -416,4 +408,4 @@ def sign_in(cfg=None):
     """Show the Cadence login and return a signed-in client, or None if the user cancelled."""
     cfg = cfg or load_config()
     with _lock:
-        return LoginWindow(build_client(cfg), cfg).result
+        return LoginWindow(client_from_config(cfg), cfg).result

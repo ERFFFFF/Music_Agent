@@ -1,0 +1,8 @@
+# The tray app (main.py) on top of the core. Nothing under cli.py imports any of these, which is what
+# lets the CLI build skip them entirely.
+
+-r requirements.txt
+
+customtkinter==6.0.0
+pystray==0.19.5
+Pillow==12.3.0

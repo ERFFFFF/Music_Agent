@@ -1,10 +1,9 @@
-import os
-import sys
 import threading
 import customtkinter as ctk
 import keyboard
 
-from config import load_config, save_config, DEFAULT_HOTKEYS, MODES
+from cadence import client_from_config
+from config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -23,22 +22,6 @@ ACTION_LABELS = {
 # Prevent multiple settings windows
 _window_open = False
 _window_lock = threading.Lock()
-
-
-def _find_icon():
-    """Locate poulet.ico: next to the exe first, then the PyInstaller bundle."""
-    exe_dir = os.path.dirname(sys.executable)
-    beside_exe = os.path.join(exe_dir, "poulet.ico")
-    if os.path.isfile(beside_exe):
-        return beside_exe
-    try:
-        base = sys._MEIPASS
-    except AttributeError:
-        base = os.path.abspath(".")
-    bundled = os.path.join(base, "poulet.ico")
-    if os.path.isfile(bundled):
-        return bundled
-    return None
 
 
 class SettingsWindow:
@@ -65,7 +48,7 @@ class SettingsWindow:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Window icon
-        icon_path = _find_icon()
+        icon_path = find_icon()
         if icon_path:
             try:
                 self.root.iconbitmap(icon_path)
@@ -143,7 +126,7 @@ class SettingsWindow:
             current_hotkey = self.config["hotkeys"].get(
                 action_id, DEFAULT_HOTKEYS.get(action_id, "")
             )
-            var = ctk.StringVar(value=current_hotkey)
+            var = ctk.StringVar(master=self.root, value=current_hotkey)
             self.hotkey_vars[action_id] = var
 
             row = ctk.CTkFrame(card, fg_color="transparent")
@@ -241,7 +224,7 @@ class SettingsWindow:
         row.pack(fill="x", padx=20, pady=(16, 6))
         ctk.CTkLabel(row, text="Controls", font=ctk.CTkFont(size=14), width=160,
                      anchor="w").pack(side="left")
-        self.mode_var = ctk.StringVar(value=self.config.get("mode", "cadence"))
+        self.mode_var = ctk.StringVar(master=self.root, value=self.config.get("mode", "cadence"))
         ctk.CTkOptionMenu(
             row, values=list(MODES), variable=self.mode_var, width=200, height=34,
             corner_radius=8, font=ctk.CTkFont(size=13), command=lambda _v: self._refresh_account(),
@@ -296,8 +279,13 @@ class SettingsWindow:
             self._with_hidden_window(lambda: login_ui.spotify_setup(self.config))
             return
         if self.account_btn.cget("text") == "Sign out":
-            login_ui.build_client(self.config).forget()
+            client_from_config(self.config).forget()
             self._refresh_account()
+            if self.on_save_callback:
+                # Sign out has to reach the RUNNING controller too. Clearing only the file left the
+                # live client holding the cookie in its jar: hotkeys kept working after "Sign out",
+                # and the next one wrote a fresh session straight back into the config.
+                self.on_save_callback()
             return
         self._with_hidden_window(lambda: login_ui.sign_in(self.config))
 
@@ -334,7 +322,7 @@ class SettingsWindow:
         dialog.attributes("-topmost", True)
         dialog.protocol("WM_DELETE_WINDOW", lambda: self._cancel_capture(dialog))
 
-        icon_path = _find_icon()
+        icon_path = find_icon()
         if icon_path:
             try:
                 dialog.iconbitmap(icon_path)

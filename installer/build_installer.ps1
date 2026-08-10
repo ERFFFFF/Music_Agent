@@ -3,8 +3,8 @@
 # Run from the repo root: .\installer\build_installer.ps1
 #
 # Prerequisites:
-#   - Python + pip install -r requirements.txt
-#   - PyInstaller (included in requirements.txt)
+#   - Python + pip install -r requirements-gui.txt   (the installer ships the tray app)
+#   - PyInstaller: pip install pyinstaller==6.22.0   (a build tool, not an app dependency)
 #   - Inno Setup 6 (https://jrsoftware.org/isdl.php)
 
 $ErrorActionPreference = "Stop"

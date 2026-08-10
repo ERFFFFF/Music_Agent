@@ -24,8 +24,6 @@ import logging
 import os
 import sys
 
-import appdirs
-
 CONFIG_FILENAME = "cadence_config.txt"
 
 DEFAULT_HOTKEYS = {
@@ -34,6 +32,17 @@ DEFAULT_HOTKEYS = {
     "previous_track": "ctrl+alt+left",
     "like_unlike": "ctrl+alt+l",
     "show_current": "ctrl+alt+c",
+}
+
+# hotkey/config action id -> the controller method it calls. Both backends implement all five
+# (cadence.CadenceController, spotify_backend.SpotifyController), and both front ends — the tray app and
+# cli.py — bind through this one map so a renamed action can't half-work.
+ACTIONS = {
+    "play_pause": "play_pause",
+    "next_track": "next_track",
+    "previous_track": "previous_track",
+    "like_unlike": "toggle_like",
+    "show_current": "show_current",
 }
 
 # Which service the hotkeys drive.
@@ -62,6 +71,11 @@ DEFAULTS = {
     "spotify_client_id": "",
     "spotify_client_secret": "",
     "spotify_redirect_uri": DEFAULT_REDIRECT_URI,
+    # The OAuth refresh token, once the browser consent has happened. Kept here with everything else
+    # rather than in a separate AppData cache file: "one file is the whole install" is the point of
+    # this module, and a portable copy that carried its Cadence session but not its Spotify one was
+    # asking to be re-authorised on every new machine.
+    "spotify_refresh_token": "",
     "hotkeys": dict(DEFAULT_HOTKEYS),
 }
 
@@ -78,13 +92,39 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def find_icon(name="poulet.ico"):
+    """The app icon: beside the exe first (so a portable copy can swap it), then inside the PyInstaller
+    bundle, then the source folder for a dev run. None when there is none — every caller has a fallback.
+
+    Lives here, with the other path logic, because main.py and settings_ui.py each had their own copy
+    and they had already drifted apart.
+    """
+    for base in (app_dir(), getattr(sys, "_MEIPASS", "")):
+        candidate = os.path.join(base, name) if base else ""
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def appdata_dir(*parts):
+    """%LOCALAPPDATA%\\MusicAgent\\Music Agent ERFFFFF[\\...] — the fallback home for the config, the
+    Spotify token cache and the log.
+
+    Spelled out rather than pulled from `appdirs`, which was a whole dependency (unmaintained since
+    2020) for this one join. The path is byte-for-byte what appdirs.user_data_dir("Music Agent
+    ERFFFFF", "MusicAgent") returned, so an existing install still finds everything it left here.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "MusicAgent", "Music Agent ERFFFFF", *parts)
+
+
 def data_dir():
     """Where the config actually lands: next to the app, unless that folder is read-only (an installed
     copy under Program Files), in which case AppData — writing is not optional, so there is a fallback."""
     here = app_dir()
     if os.access(here, os.W_OK):
         return here
-    path = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
+    path = appdata_dir()
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -95,7 +135,7 @@ def config_path():
 
 def legacy_paths():
     """The pre-consolidation files, still read once so an existing install keeps its settings."""
-    old = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
+    old = appdata_dir()
     return {
         "config": [os.path.join(data_dir(), "config.json"), os.path.join(old, "config.json")],
         "session": [os.path.join(data_dir(), "cadence_session.json"),
@@ -160,16 +200,24 @@ def _migrate():
 def load_config():
     """The whole configuration, defaults filled in. A missing or corrupt file yields defaults and never
     raises: this runs before anything else, so a bad file must not be able to stop the app starting."""
-    cfg = {**DEFAULTS, "hotkeys": dict(DEFAULT_HOTKEYS)}
     path = config_path()
     if os.path.isfile(path):
         data = _read_json(path)
         if not data:
             logging.warning("%s is unreadable or not valid JSON — using defaults.", path)
-        cfg.update({k: v for k, v in data.items() if k in DEFAULTS and k != "hotkeys"})
-        cfg["hotkeys"] = {**DEFAULT_HOTKEYS, **(data.get("hotkeys") or {})}
     else:
-        cfg.update(_migrate())
+        data = _migrate()
+    # One merge for both branches. Hotkeys are merged key-by-key rather than replaced, so a config
+    # (or a migrated legacy one) that binds a single action keeps the defaults for the other four.
+    # `hotkeys` is only trusted when it's actually a dict — a hand-edited string or list would other-
+    # wise raise out of the ** unpack, and this function must never stop the app from starting.
+    hotkeys = data.get("hotkeys")
+    if not isinstance(hotkeys, dict):
+        hotkeys = {}
+    cfg = {**DEFAULTS,
+           **{k: v for k, v in data.items() if k in DEFAULTS and k != "hotkeys"},
+           "hotkeys": {**DEFAULT_HOTKEYS,
+                       **{k: v for k, v in hotkeys.items() if isinstance(v, str)}}}
     if cfg.get("mode") not in MODES:
         cfg["mode"] = DEFAULTS["mode"]
     return cfg
@@ -199,18 +247,44 @@ def save_config(config):
         raise
 
 
-def spotify_credentials(cfg):
-    """Spotify keys in the SPOTIFY_* shape spotipy expects, from the config file."""
-    return {
-        "SPOTIFY_CLIENT_ID": cfg.get("spotify_client_id", ""),
-        "SPOTIFY_CLIENT_SECRET": cfg.get("spotify_client_secret", ""),
-        "SPOTIFY_REDIRECT_URI": cfg.get("spotify_redirect_uri") or DEFAULT_REDIRECT_URI,
-    }
+def update_config(key, value, cfg=None):
+    """Write ONE field without clobbering the rest of the file.
+
+    Long-lived objects hold the config dict they were built with and persist a credential minutes or
+    hours later — a CadenceClient re-saving its sliding cookie, a Spotify _Auth storing a rotated
+    refresh token. Writing that captured dict back would silently revert whatever the Settings window
+    saved in between (measured: one cookie rotation put an old hotkey back on disk). So re-read, change
+    the one field, write that. `cfg` is updated too so the caller's copy doesn't go stale.
+    """
+    latest = load_config()
+    latest[key] = value
+    save_config(latest)
+    if cfg is not None:
+        cfg[key] = value
+    return latest
+
+
+def is_configured(cfg):
+    """Does the selected mode have what it needs to run? Reads the dict only — no network, no extra
+    files — because this decides whether to throw a setup window (or a setup prompt) at the user on
+    launch. Lives here rather than in main.py so the CLI can ask the same question without importing
+    a GUI toolkit to do it.
+    """
+    if cfg["mode"] == "cadence":
+        return bool(cfg.get("cadence_session"))
+    return bool(cfg.get("spotify_client_id"))
 
 
 def save_spotify_credentials(cfg, client_id, client_secret, redirect_uri=DEFAULT_REDIRECT_URI):
-    """Store the Spotify app's keys (what the installer used to write into a .env)."""
-    cfg["spotify_client_id"] = client_id.strip()
+    """Store the Spotify app's keys (what the installer used to write into a .env).
+
+    Changing the app invalidates the refresh token that was issued by the old one, so drop it here
+    rather than letting the next hotkey fail with "Spotify rejected the sign-in".
+    """
+    client_id = client_id.strip()
+    if client_id != cfg.get("spotify_client_id"):
+        cfg["spotify_refresh_token"] = ""
+    cfg["spotify_client_id"] = client_id
     cfg["spotify_client_secret"] = client_secret.strip()
     cfg["spotify_redirect_uri"] = (redirect_uri or DEFAULT_REDIRECT_URI).strip()
     save_config(cfg)
@@ -245,7 +319,13 @@ def demo():
         assert back["spotify_client_id"] == "sp-id" and back["spotify_redirect_uri"].endswith("/callback")
         assert back["hotkeys"]["play_pause"] == "f1"                             # overridden
         assert back["hotkeys"]["next_track"] == DEFAULT_HOTKEYS["next_track"]     # rest defaulted
-        assert spotify_credentials(back)["SPOTIFY_CLIENT_ID"] == "sp-id"
+
+        # a refresh token belongs to the app that issued it: swapping credentials must drop it
+        back["spotify_refresh_token"] = "issued-to-sp-id"
+        save_spotify_credentials(back, "sp-id", "sp-secret")          # same app, keep it
+        assert load_config()["spotify_refresh_token"] == "issued-to-sp-id"
+        save_spotify_credentials(back, "other-id", "other-secret")    # different app, drop it
+        assert load_config()["spotify_refresh_token"] == ""
         if os.name != "nt":
             assert oct(os.stat(config_path()).st_mode)[-3:] == "600", "session token must not be world-readable"
 
@@ -270,6 +350,10 @@ def demo():
         assert cfg["cadence_url"] == "https://old.example" and cfg["cadence_session"] == "old-cookie"
         assert cfg["cf_access_client_id"] == "old-cf" and cfg["spotify_client_id"] == "old-id"
         assert cfg["hotkeys"]["next_track"] == "f2"
+        assert cfg["hotkeys"]["play_pause"] == DEFAULT_HOTKEYS["play_pause"], \
+            "migrating one bound hotkey must not drop the defaults for the other four"
+        assert is_configured(cfg), "a migrated Cadence session counts as configured"
+        assert not is_configured({**DEFAULTS, "mode": "spotify"})
         save_config(cfg)
         assert os.path.isfile(os.path.join(d, "config.json")), "migration must not delete the old files"
     app_dir = real_app_dir

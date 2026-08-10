@@ -22,12 +22,12 @@ import sys
 import threading
 import time
 
-import appdirs
 import keyboard
 import pystray
 from PIL import Image
 
-from config import load_config, save_config, spotify_credentials
+from cadence import client_from_config
+from config import ACTIONS, appdata_dir, find_icon, is_configured, load_config, save_config
 import login_ui
 from settings_ui import open_settings
 
@@ -38,9 +38,7 @@ ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(MY_APP_ID)
 
 def initialize_logging():
     """Initialize logging to both file and console."""
-    app_data_path = os.path.join(
-        appdirs.user_log_dir("Music Agent ERFFFFF", "MusicAgent")
-    )
+    app_data_path = appdata_dir("Logs")
     os.makedirs(app_data_path, exist_ok=True)
     log_file = os.path.join(app_data_path, "music_agent_control.log")
     log_format = "%(asctime)s:%(levelname)s:%(message)s"
@@ -77,24 +75,6 @@ def create_single_instance():
 
 
 create_single_instance()
-
-
-def resource_path(relative_path):
-    """Get absolute path to resource (for PyInstaller compatibility)."""
-    try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-
-
-def find_icon():
-    """Locate poulet.ico: check next to exe first, then resource_path."""
-    exe_dir = os.path.dirname(sys.executable)
-    beside_exe = os.path.join(exe_dir, "poulet.ico")
-    if os.path.isfile(beside_exe):
-        return beside_exe
-    return resource_path("poulet.ico")
 
 
 # Windows balloon notification
@@ -142,14 +122,7 @@ def notify(message, title="Music Agent"):
 # --------------------------------------------------------------------------- the controller (= the mode)
 app_config = load_config()
 controller = None
-
-
-def is_configured(cfg):
-    """Does the selected mode have what it needs? Reads the config dict only — no network and no extra
-    files, because this decides whether to show a setup window at launch."""
-    if cfg["mode"] == "cadence":
-        return bool(cfg.get("cadence_session"))
-    return bool(spotify_credentials(cfg)["SPOTIFY_CLIENT_ID"])
+tray_icon = None
 
 
 def run_setup(cfg):
@@ -181,21 +154,26 @@ def build_controller(cfg, setup=True):
     if cfg["mode"] == "cadence":
         from cadence import CadenceController
 
-        client = login_ui.build_client(cfg)
+        client = client_from_config(cfg)
         if not client.is_authenticated():
             # No session, or it expired/was revoked: this is the "login part" on launch. It appears
             # once per machine — Cadence re-signs the cookie on every call, so it stays valid.
+            #
+            # Gated on `setup` as well, because is_authenticated() is a live request that also returns
+            # False for a sleeping or unreachable server. Without the gate, saving a hotkey while the
+            # Cadence stack was scaled to zero threw a full username/password window at someone who
+            # was already signed in.
+            if not setup:
+                return None
             client = login_ui.sign_in(cfg)
             if client is None:
                 return None
         return CadenceController(client)
 
-    from spotify_backend import SpotifyConfigError, SpotifyController
+    from spotify_backend import SpotifyConfigError, controller_from_config
 
-    cache_data_dir = appdirs.user_data_dir("Music Agent ERFFFFF", "MusicAgent")
-    os.makedirs(cache_data_dir, exist_ok=True)
     try:
-        return SpotifyController(spotify_credentials(cfg), os.path.join(cache_data_dir, ".cache"))
+        return controller_from_config(cfg)
     except SpotifyConfigError as e:
         # No longer fatal: a fresh copy legitimately has no Spotify keys, and the fix (enter them, or
         # switch to Cadence) is one Settings click away — exiting would hide the message with the app.
@@ -226,14 +204,7 @@ def action(name):
     return run
 
 
-# Hotkey action map: config key -> controller method
-HOTKEY_ACTIONS = {
-    "play_pause": action("play_pause"),
-    "next_track": action("next_track"),
-    "previous_track": action("previous_track"),
-    "like_unlike": action("toggle_like"),
-    "show_current": action("show_current"),
-}
+HOTKEY_ACTIONS = {action_id: action(method) for action_id, method in ACTIONS.items()}
 
 
 def setup_hotkeys():
@@ -255,12 +226,18 @@ def reload_config():
     previous = app_config
     app_config = load_config()
     setup_hotkeys()
+    # The credential fields are in here too: signing in (or out) from Settings has to reach the LIVE
+    # controller, which otherwise keeps using the old client — a revoked session kept reporting
+    # "sign in again" after a successful re-login, and Sign out kept working until the app restarted.
     changed = any(previous.get(k) != app_config.get(k)
-                  for k in ("mode", "cadence_url", "cf_access_client_id", "cf_access_client_secret"))
+                  for k in ("mode", "cadence_url", "cf_access_client_id", "cf_access_client_secret",
+                            "cadence_session", "spotify_client_id"))
     if changed or controller is None:
         # setup=False: Settings has its own sign-in / credentials buttons, so don't ALSO pop the
         # first-run chooser at someone who just saved a hotkey.
         controller = build_controller(app_config, setup=False)
+    if tray_icon is not None:
+        tray_icon.title = f"Music Agent ({app_config['mode']})"   # or it reports the mode it started in
     logging.info("Config reloaded (mode=%s).", app_config["mode"])
 
 
@@ -269,7 +246,7 @@ def create_tray_icon():
     icon_path = find_icon()
     try:
         icon_image = Image.open(icon_path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — includes icon_path being None
         logging.warning(f"Could not load icon from {icon_path}: {e}. Using fallback.")
         icon_image = Image.new("RGBA", (64, 64), (70, 130, 180, 255))
 
@@ -279,7 +256,7 @@ def create_tray_icon():
             lambda: open_settings(on_save_callback=reload_config),
         ),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit", lambda icon, item: quit_app(icon)),
+        pystray.MenuItem("Quit", lambda icon, _item: icon.stop()),
     )
 
     icon = pystray.Icon(
@@ -291,16 +268,11 @@ def create_tray_icon():
     return icon
 
 
-def quit_app(icon):
-    """Clean shutdown: stop tray icon, which unblocks main thread."""
-    icon.stop()
-    logging.info("Music Agent stopped via tray menu.")
-
-
 def main():
-    global controller, app_config
+    global controller, tray_icon
+    # build_controller mutates app_config in place when setup changes the mode, so the tray title
+    # below already reads the chosen one — no re-read needed.
     controller = build_controller(app_config)
-    app_config = load_config()  # setup may have switched the mode; the tray title reads it
     if controller is None and not is_configured(app_config):
         # Setup was closed without choosing anything — there is genuinely nothing to control. A
         # CONFIGURED copy whose controller failed to build (dead token, no network) still goes to the
@@ -315,7 +287,7 @@ def main():
     kb_thread.start()
 
     # Run tray icon on main thread (blocks until Quit)
-    icon = create_tray_icon()
+    tray_icon = icon = create_tray_icon()
     logging.info("System tray icon started.")
     icon.run()
 

@@ -14,6 +14,7 @@ Cross-platform on purpose: only `requests` is used here, so this module can be e
 """
 
 import logging
+import sys
 import time
 from urllib.parse import urlsplit
 
@@ -23,14 +24,23 @@ import requests
 # and failing here beats a 422 from the server.
 COMMANDS = ("play_pause", "next", "previous", "like", "stop")
 
-# No default server is baked in: the URL comes from the config file (config.cadence_url), which the
-# user fills in on the sign-in screen. An empty one is a real state — the app just hasn't been told
-# where its Cadence is yet — so it fails with that message instead of quietly calling somebody else's.
 TIMEOUT = 25  # Cadence scales to zero when idle (Sablier); the call that wakes it can sit for ~15s
 
 
 class CadenceError(Exception):
     """Anything the user needs to see: bad credentials, unreachable server, blocked at the edge."""
+
+
+def normalize_url(raw):
+    """Accept what people actually type. "cadence.example.com" is a URL to a human but not to requests,
+    so assume https rather than failing with a connection error they can't act on.
+
+    Lives here, not in the sign-in window, because every entry point needs it and login_ui.py is behind
+    `import customtkinter` — the CLI and the self-checks would otherwise get stricter URL handling than
+    the GUI for no reason.
+    """
+    url = (raw or "").strip().rstrip("/")
+    return "https://" + url if url and "://" not in url else url
 
 
 def _blocked_by_access(response):
@@ -56,7 +66,7 @@ class CadenceClient:
         """`session` seeds the saved cookie; `on_session(cookie)` is called whenever it changes so the
         caller can persist it (config.py writes it into cadence_config.txt). The client owns no file of
         its own — one config file holds everything, and this class stays testable without one."""
-        self.base_url = (base_url or "").rstrip("/")
+        self.base_url = normalize_url(base_url)
         self.on_session = on_session
         self._saved = session or ""
         self.session = requests.Session()
@@ -101,13 +111,9 @@ class CadenceClient:
             fallback = c.value
         return fallback
 
-    def _save_cookie(self):
-        """Hand the caller the current cookie when it CHANGES, so the config file always holds a live
-        session. Cadence re-issues it on the agent's own endpoints (a sliding window), so an agent in
-        regular use never has to log in again — but only a real change is worth a disk write."""
-        cookie = self._cookie()
-        if not cookie or cookie == self._saved:
-            return
+    def _emit(self, cookie):
+        """Hand the caller a cookie to persist. Never raises: storing the session is bookkeeping, and
+        a full disk must not turn a working play/pause into an error."""
         self._saved = cookie
         if self.on_session:
             try:
@@ -115,15 +121,18 @@ class CadenceClient:
             except Exception as e:  # noqa: BLE001 — persistence must never break a playback command
                 logging.warning(f"Could not save the Cadence session: {e}")
 
+    def _save_cookie(self):
+        """Persist the current cookie when it CHANGES. Cadence re-issues it on the agent's own
+        endpoints (a sliding window), so an agent in regular use never logs in again — but only a real
+        change is worth a disk write."""
+        cookie = self._cookie()
+        if cookie and cookie != self._saved:
+            self._emit(cookie)
+
     def forget(self):
         """Log out locally: drop the cookie here and wherever the caller stored it."""
         self.session.cookies.clear()
-        self._saved = ""
-        if self.on_session:
-            try:
-                self.on_session("")
-            except Exception as e:  # noqa: BLE001
-                logging.warning(f"Could not clear the saved Cadence session: {e}")
+        self._emit("")
 
     # ---------------------------------------------------------------- plumbing
     def _request(self, method, path, **kw):
@@ -139,12 +148,8 @@ class CadenceClient:
             r = self.session.request(method, url, timeout=TIMEOUT, **kw)
         except requests.RequestException as e:
             raise CadenceError(f"Can't reach Cadence at {self.base_url}: {e}") from e
-        # Cloudflare Access refuses BEFORE Cadence ever sees the request, and it does so with a 302 to
-        # its login page — which `requests` cheerfully follows, turning a hard block into a 200 full of
-        # HTML that json() then chokes on. Measured against a live Access-protected host:
-        # `www-authenticate: Cloudflare-Access` on the 302, final URL on *.cloudflareaccess.com. Both are
-        # checked, so it
-        # is caught whether or not redirects were followed — otherwise every call fails as a mystery.
+        # A 302 to the Access login page, which requests follows into a 200 of HTML — see
+        # _blocked_by_access, which catches it whether or not redirects were followed.
         if _blocked_by_access(r):
             raise CadenceError(
                 "Blocked by Cloudflare Access. Create a service token (Zero Trust → Access → Service "
@@ -227,11 +232,12 @@ def client_from_config(cfg):
     `cadence_session` and written back whenever Cadence re-signs it. Lives here rather than in the UI
     layer because it is plumbing, and because it has to be exercisable without a GUI toolkit installed.
     """
-    from config import save_config
+    from config import update_config
 
     def remember(cookie):
-        cfg["cadence_session"] = cookie
-        save_config(cfg)
+        # update_config, not save_config(cfg): this fires long after the client was built, and writing
+        # the whole captured dict would undo anything Settings saved in the meantime.
+        update_config("cadence_session", cookie, cfg)
 
     return CadenceClient(
         base_url=cfg.get("cadence_url", ""),
@@ -292,19 +298,20 @@ class CadenceController:
 def selftest():
     """Offline checks for the two things that silently break everything: cookie bookkeeping and
     telling a wall (Cloudflare Access / a wake page) apart from a real answer. No network needed."""
-    class R:  # minimal response stand-in
-        def __init__(self, headers=None, url="", history=()):
-            self.headers, self.url, self.history = headers or {}, url, history
-
-    class H:
-        def __init__(self, loc):
-            self.headers = {"location": loc}
+    from types import SimpleNamespace
+    def R(headers=None, url="", history=()):   # response stand-in
+        return SimpleNamespace(headers=headers or {}, url=url, history=history)
 
     assert _blocked_by_access(R({"www-authenticate": 'Cloudflare-Access resource_metadata="x"'}))
     assert _blocked_by_access(R(url="https://x.cloudflareaccess.com/cdn-cgi/access/login/y"))
     assert _blocked_by_access(R(url="https://cadence.example/api/api/me",
-                                history=(H("https://x.cloudflareaccess.com/l"),)))
+                                history=(R(headers={"location": "https://x.cloudflareaccess.com/l"}),)))
     assert not _blocked_by_access(R(url="https://cadence.example/api/api/me"))
+
+    assert normalize_url("cadence.example.com") == "https://cadence.example.com"
+    assert normalize_url("https://cadence.example.com/") == "https://cadence.example.com"
+    assert normalize_url("  ") == "" and normalize_url(None) == ""
+    assert CadenceClient(base_url="cadence.example.com").base_url == "https://cadence.example.com"
 
     # Regression: a restored session plus the server's own re-issued one must never leave TWO cookies
     # named `session` in the jar — requests' cookies.get() raises CookieConflictError on that, which
@@ -346,7 +353,6 @@ def demo():
     Asserts the full round trip — login, a command, and that the command really reached a tab — because
     every part of this file is network glue whose failure mode is silence.
     """
-    import sys
     url, user, pw = sys.argv[1], sys.argv[2], sys.argv[3]
     c = CadenceClient(base_url=url)
     me = c.login(user, pw)
@@ -364,8 +370,6 @@ def demo():
 
 
 if __name__ == "__main__":
-    import sys as _sys
-
     selftest()                       # always runs: offline, fast, and covers the silent-failure paths
-    if len(_sys.argv) > 3:
+    if len(sys.argv) > 3:
         demo()                       # add <url> <user> <pass> to also exercise a live server

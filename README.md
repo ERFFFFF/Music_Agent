@@ -31,7 +31,10 @@ Create an agent that provides seamless control over your music using keybinds.
 - **Like/Unlike Songs**: Instantly like or unlike the currently playing song.
 - **Previous Song**: Return to the previous track with a simple keypress.
 - **Show Current Song**: A notification with what's playing right now.
-- **Wake Device** *(Spotify mode)*: Transfer playback to an inactive Spotify Connect device (the Spotify client must be running on the target device).
+
+*(Spotify mode picks a Connect device on its own — the active one if there is one, otherwise the first
+it can see — and every command names that device explicitly, so an idle-but-running Spotify client
+starts playing without a separate "wake" step.)*
 
 ## 🚦 First launch — pick your account
 
@@ -51,6 +54,15 @@ where the same two windows are one click away (*Sign in… / Sign out*, *Credent
    baked into the app) and sign in with the account you use in the web player. Cadence has no
    self-registration, so this is an account the operator made for you.
 3. That's it: it goes to the system tray and the hotkeys work.
+
+> **"Windows protected your PC"?** Click **More info → Run anyway** — once, then never again.
+> Windows tags anything that arrived from the internet with a *Mark-of-the-Web*, and SmartScreen
+> warns on tagged programs it doesn't recognise yet. It's about where the file came from, not about
+> what's in it: an exe you build yourself with `build_portable.ps1` is never tagged and never asks.
+> To clear it up front instead: right-click the exe → Properties → tick **Unblock** → OK, or
+> `Unblock-File .\MusicAgent.exe` in PowerShell. Both just delete that tag from that one file — no
+> admin rights, nothing changed on your PC, no SmartScreen setting touched. Unblocking the `.zip`
+> *before* extracting saves doing it to the exe afterwards.
 
 Everything the app remembers lives in **one file next to it — `cadence_config.txt`**: the mode, your
 Cadence URL and signed-in session, the Cloudflare token, the Spotify keys, and your shortcuts. Copy that
@@ -88,10 +100,36 @@ fields empty.
 hotkey pressed in that window says "Cadence is waking up — try again in a few seconds". (If it was
 asleep, no browser tab was open either, so there was nothing to control regardless.)
 
+## ⌨️ No-GUI mode (`cli.py`)
+
+Everything the Settings window does, from a terminal — same `cadence_config.txt`, same two modes, same
+five actions. There is no separate configuration to keep in sync: the tray app and the CLI read and
+write the one file.
+
+```powershell
+python cli.py setup       # interactive: pick a mode, enter a server, sign in
+python cli.py status      # what's configured and what isn't
+python cli.py now         # what's playing
+python cli.py next        # ...and play / pause / prev / like
+python cli.py hotkeys                          # list them
+python cli.py hotkeys play_pause ctrl+alt+p    # rebind one
+python cli.py hotkeys reset
+python cli.py run         # the hotkey agent itself, headless — Ctrl+C stops it
+```
+
+`cli.py` imports **no GUI libraries at all**, so a CLI-only machine installs two packages instead of
+five:
+
+```powershell
+pip install -r requirements.txt        # requests + keyboard — enough for cli.py
+pip install -r requirements-gui.txt    # adds customtkinter + pystray + Pillow, for the tray app
+```
+
 ### Building the portable exe
 
 ```powershell
-.\build_portable.ps1      # -> dist\MusicAgent.exe
+.\build_portable.ps1           # -> dist\MusicAgent.exe       tray app
+.\build_portable.ps1 -Cli      # -> dist\MusicAgent-cli.exe   console app, no GUI libraries bundled
 ```
 
 ## 🔗 Useful Links

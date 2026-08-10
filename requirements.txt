@@ -1,10 +1,8 @@
-requests
-spotipy
-keyboard
-pyinstaller
-appdirs
-ratelimit
-python-dotenv
-pystray
-Pillow
-customtkinter
+# Core — everything cli.py needs, and nothing more. Pinned exactly so a build today and a build in a
+# year produce the same app. Needs Python >=3.10,<3.16 (floor from requests, ceiling from PyInstaller).
+#
+# The tray app also needs requirements-gui.txt. PyInstaller lives in build_portable.ps1, which is the
+# only thing that uses it.
+
+requests==2.34.2
+keyboard==0.13.5
