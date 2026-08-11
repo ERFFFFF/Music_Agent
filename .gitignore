@@ -24,5 +24,9 @@ config.json
 cadence_session.json
 MusicAgent_portable.spec
 
+# Packaging output from `pip install -e .` -- generated, never authored.
+*.egg-info/
+.pytest_cache/
+
 # Tool caches
 .ruff_cache/
