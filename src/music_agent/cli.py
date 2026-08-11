@@ -310,7 +310,7 @@ def cmd_hotkeys(cfg, args):
 
 # --------------------------------------------------------------------------------- doing things
 def cmd_control(cfg, args):
-    # Guarded like main.py's hotkey wrapper and cmd_run: a one-shot command that hits something
+    # Guarded like ui/tray.py's hotkey wrapper and cmd_run: a one-shot command that hits something
     # unexpected should say so in one line, not print a traceback at someone who typed `... next`.
     controller = _controller(cfg)
     try:

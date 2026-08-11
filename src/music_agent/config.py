@@ -368,7 +368,7 @@ def find_icon(name="poulet.ico"):
     """The app icon: beside the exe first (so a portable copy can swap it), then inside the PyInstaller
     bundle, then the source folder for a dev run. None when there is none — every caller has a fallback.
 
-    Lives here, with the other path logic, because main.py and settings.py each had their own copy
+    Lives here, with the other path logic, because ui/tray.py and ui/settings.py each had their own copy
     and they had already drifted apart.
     """
     for base in (app_dir(), getattr(sys, "_MEIPASS", "")):
@@ -635,7 +635,7 @@ def update_config(key, value, cfg=None):
 def is_configured(cfg):
     """Does the selected mode have what it needs to run? Reads the dict only — no network, no extra
     files — because this decides whether to throw a setup window (or a setup prompt) at the user on
-    launch. Lives here rather than in main.py so the CLI can ask the same question without importing
+    launch. Lives here rather than in ui/tray.py so the CLI can ask the same question without importing
     a GUI toolkit to do it.
 
     A saved session is one way to be ready; a `.env` carrying the server and the account is the other,

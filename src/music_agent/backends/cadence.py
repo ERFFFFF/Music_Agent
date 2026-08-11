@@ -20,7 +20,7 @@ import time
 from urllib.parse import urlsplit
 
 from music_agent.net import httpmin
-from music_agent.config import normalize_url                        # noqa: F401 — re-exported; login_ui imports it
+from music_agent.config import normalize_url                        # noqa: F401 — re-exported; ui/login.py imports it
 
 # Every command the Cadence backend accepts (Cadence's own backend/main.py `_REMOTE_CMDS`). Anything else is a typo,
 # and failing here beats a 422 from the server.
@@ -144,7 +144,7 @@ class CadenceClient:
             # ASCII ">" rather than an arrow, and no "paste it below": this sentence reaches a
             # console as often as a dialog now. The arrow is U+2192, which cp1252 and cp437 cannot
             # encode at all — print() raised UnicodeEncodeError and the person who most needed to
-            # read this got a traceback instead. music_agent_cli also guards stdout, but a message
+            # read this got a traceback instead. cli.py also guards stdout, but a message
             # that only survives because of a guard is one edit away from breaking again.
             raise CadenceError(
                 "Blocked by Cloudflare Access. Create a service token (Zero Trust > Access > Service "

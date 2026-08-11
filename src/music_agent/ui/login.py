@@ -1,6 +1,6 @@
 """First-run setup windows: pick a service, then sign in to it.
 
-Three windows, all blocking on purpose — main.py runs them before it registers any hotkey, because a
+Three windows, all blocking on purpose — ui/tray.py runs them before it registers any hotkey, because a
 hotkey that fires with nothing configured can only queue errors:
 
   choose_mode()    which service the hotkeys drive (Cadence account / Spotify app)

@@ -47,9 +47,9 @@ def test_names_resolve():
     """Catch `os.path.join(...)` left behind after someone deleted `import os`.
 
     Uses the compiler's own symbol table: any name a function only READS, that resolves globally and
-    that the module never binds, is a NameError waiting for the right code path. main/login_ui/
-    settings_ui are the ones that matter — they cannot be imported off Windows, so nothing else here
-    would ever notice.
+    that the module never binds, is a NameError waiting for the right code path. ui/tray.py,
+    ui/login.py and ui/settings.py are the ones that matter — they cannot be imported off Windows, so
+    nothing else here would ever notice.
     """
     known_globals = {"__file__", "__name__", "__doc__"}
     problems = []

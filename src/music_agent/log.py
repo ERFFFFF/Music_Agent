@@ -60,7 +60,7 @@ def install(level=logging.DEBUG):
         logging.getLogger().addHandler(_handler)
     _handler.setLevel(level)
     root = logging.getLogger()
-    # Only ever LOWER the root level. main.py's initialize_logging() sets up its own file+console
+    # Only ever LOWER the root level. ui/tray.py's initialize_logging() sets up its own file+console
     # handlers at INFO; raising the bar here would silence them, and a Logs page is not worth
     # breaking someone's existing log with.
     if root.level == logging.NOTSET or root.level > level:

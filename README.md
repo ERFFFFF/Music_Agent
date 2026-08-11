@@ -304,8 +304,8 @@ the thing they were wrapping:
 
 | Was | Now | Why |
 |-----|-----|-----|
-| `requests` | [`net/httpmin.py`](httpmin.py) | ~140 lines of `urllib.request` in a `requests` shape. Both backends make small JSON calls and nothing else. |
-| `keyboard` | [`win32/hotkeys.py`](win32/hotkeys.py) | Win32 `RegisterHotKey` + a message loop, which *is* the OS's global-hotkey mechanism — no low-level keyboard hook, so no administrator rights. |
+| `requests` | [`net/httpmin.py`](src/music_agent/net/httpmin.py) | ~140 lines of `urllib.request` in a `requests` shape. Both backends make small JSON calls and nothing else. |
+| `keyboard` | [`win32/hotkeys.py`](src/music_agent/win32/hotkeys.py) | Win32 `RegisterHotKey` + a message loop, which *is* the OS's global-hotkey mechanism — no low-level keyboard hook, so no administrator rights. |
 
 The tray app still needs `keyboard`, because `ui/settings.py` **records** a combination as you press
 it, and that is the one thing `RegisterHotKey` cannot do.
