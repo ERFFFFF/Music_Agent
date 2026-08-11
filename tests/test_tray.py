@@ -1,0 +1,60 @@
+"""`tray.reload_config` — the Save button's callback, and the one path nothing else reached.
+
+It runs on the Settings window's own thread, which swallows the traceback, and its FIRST act is to
+unhook every hotkey. So a crash in the middle leaves all five keys dead with nothing on screen saying
+why, until the app is restarted — which is exactly what shipped when the `src/` move rebound
+`app_config` to None here instead of re-reading the config.
+
+Everything it touches is faked: no keyboard, no window, no network. The point is the wiring.
+"""
+
+import sys
+from unittest import mock
+
+import pytest
+
+if sys.platform != "win32":
+    pytest.skip("the tray app is Windows-only", allow_module_level=True)
+
+tray = pytest.importorskip("music_agent.ui.tray")   # customtkinter/pystray/PIL — the `gui` extra
+
+
+def test_reload_config():
+    fresh = {"mode": "spotify", "hotkeys": {"play_pause": "ctrl+alt+up"},
+             "spotify_client_id": "new-app"}
+    stale = {"mode": "cadence", "hotkeys": {"play_pause": "ctrl+alt+up"}, "spotify_client_id": ""}
+    bound = []
+    fake_keyboard = mock.Mock()
+    fake_keyboard.add_hotkey.side_effect = lambda combo, _fn: bound.append(combo)
+    built = []
+
+    with mock.patch.object(tray, "keyboard", fake_keyboard), \
+            mock.patch.object(tray, "load_config", lambda: fresh), \
+            mock.patch.object(tray, "build_controller", lambda cfg, setup=True: built.append(setup) or "ctl"), \
+            mock.patch.object(tray, "app_config", stale), \
+            mock.patch.object(tray, "controller", "old"), \
+            mock.patch.object(tray, "tray_icon", mock.Mock()):
+        tray.reload_config()
+
+        assert tray.app_config is fresh, "the saved config has to be re-read, not dropped"
+        assert bound == ["ctrl+alt+up"], bound
+        # The mode changed, so the live controller must be rebuilt — a Settings save that only
+        # rewrites the file leaves the running app driving the account it started with.
+        assert tray.controller == "ctl" and built == [False], built
+        assert tray.tray_icon.title == "Music Agent (spotify)", tray.tray_icon.title
+        assert fake_keyboard.unhook_all_hotkeys.called, "the old bindings have to go first"
+
+
+def test_reload_config_leaves_an_unchanged_controller_alone():
+    """Saving a hotkey must not tear down a working session: rebuilding a Cadence controller is a
+    live request, and doing it on every save made a sleeping server look like a signed-out one."""
+    same = {"mode": "cadence", "hotkeys": {"next_track": "ctrl+alt+right"}, "cadence_session": "s"}
+
+    with mock.patch.object(tray, "keyboard", mock.Mock()), \
+            mock.patch.object(tray, "load_config", lambda: dict(same)), \
+            mock.patch.object(tray, "build_controller", mock.Mock(side_effect=AssertionError("rebuilt"))), \
+            mock.patch.object(tray, "app_config", dict(same)), \
+            mock.patch.object(tray, "controller", "live"), \
+            mock.patch.object(tray, "tray_icon", None):
+        tray.reload_config()
+        assert tray.controller == "live"

@@ -43,14 +43,13 @@ def initialize_logging():
     os.makedirs(app_data_path, exist_ok=True)
     log_file = os.path.join(app_data_path, "music_agent_control.log")
     log_format = "%(asctime)s:%(levelname)s:%(message)s"
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format=log_format,
-        handlers=[
-            logging.FileHandler(log_file),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    # sys.stdout is None in the --noconsole build (there is no console to write to), and a
+    # StreamHandler over it raises inside logging on EVERY record — swallowed by handleError, so the
+    # only symptom is the work. Only add the console handler when there is a console.
+    handlers = [logging.FileHandler(log_file, encoding="utf-8")]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(level=logging.DEBUG, format=log_format, handlers=handlers)
     # Third-party libraries log at DEBUG too, and Pillow alone emits ~50 lines listing every image
     # plugin it can find. Since the Logs page exists to show what THIS app is doing, they are pinned
     # at WARNING -- their problems still surface, their bookkeeping does not.
@@ -245,7 +244,7 @@ def reload_config():
     global app_config, controller
     keyboard.unhook_all_hotkeys()
     previous = app_config
-    app_config = None
+    app_config = load_config()
     setup_hotkeys()
     # The credential fields are in here too: signing in (or out) from Settings has to reach the LIVE
     # controller, which otherwise keeps using the old client — a revoked session kept reporting
