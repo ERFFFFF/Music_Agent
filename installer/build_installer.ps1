@@ -17,6 +17,17 @@ Set-Location $RepoRoot
 Write-Host "Cleaning previous build..." -ForegroundColor Cyan
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build
 
+# Step 1b: the build tools. Pinned here rather than in a requirements file because this script is the
+# only thing that uses PyInstaller: a build tool, not a dependency of the app.
+python -m pip install -r requirements-gui.txt "pyinstaller==6.22.0"
+
+# The version lives in ONE place, pyproject.toml, and is passed to Inno Setup below. It used to be
+# typed into installer.iss as well, and the two had already drifted (4.0.0 vs 4.1.0) - so the
+# installer would have announced the wrong version of itself.
+$Version = (Select-String -Path pyproject.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+if (-not $Version) { Write-Error "No version in pyproject.toml"; exit 1 }
+Write-Host "Building version $Version" -ForegroundColor Cyan
+
 # Step 2: PyInstaller build
 #
 # Flags, not a checked-in .spec. The old "Music Agent.spec" carried datas=[('.\.env', '.')] from when
@@ -33,7 +44,8 @@ py -m PyInstaller `
     --icon "poulet.ico" `
     --add-data "poulet.ico;." `
     --hidden-import "pystray._win32" `
-    main.py
+    --paths src `
+    tray_entry.py
 if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller build failed."
     exit 1
@@ -76,7 +88,7 @@ if (-not $ISCC) {
 
 # Step 4: Compile installer
 Write-Host "Compiling installer with Inno Setup..." -ForegroundColor Cyan
-& $ISCC installer\installer.iss
+& $ISCC "/DMyAppVersion=$Version" installer\installer.iss
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Inno Setup compilation failed."
     exit 1

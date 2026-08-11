@@ -3,7 +3,12 @@
 ; Requires: PyInstaller build output in dist\Music Agent\
 
 #define MyAppName "Music Agent"
-#define MyAppVersion "4.0.0"
+; The version comes from pyproject.toml, passed in by build_installer.ps1 as /DMyAppVersion=x.y.z.
+; Typed in both places it had already drifted, and the installer announced a version that no longer
+; matched what it contained. Compiling this file by hand instead says so, loudly, rather than lying.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "erfffff"
 #define MyAppURL "https://github.com/ERFFFFF/Music_Agent"
 #define MyAppExeName "Music Agent.exe"
@@ -59,16 +64,17 @@ Root: HKCU; Subkey: "Software\Classes\AppUserModelIDs\com.erfffff.musicagent"; V
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
-[UninstallDelete]
-; Legacy: older versions of this installer wrote a .env here. The app now keeps its own next to the
-; exe when writable, else in AppData (which the uninstall step below offers to clear).
-Type: files; Name: "{app}\.env"
+; There is deliberately no [UninstallDelete] for {app}\.env any more. It used to be listed here
+; because an ancient installer WROTE that file; today it is the operator's own — hand-edited, holding
+; the server address and account — and this section runs on every UPGRADE too (InitializeSetup below
+; uninstalls the old version first). So an upgrade silently deleted the file the app is configured
+; from. It is offered with the rest of the data below instead, where there is a question attached.
 
 [Code]
 { There is deliberately NO Spotify credentials page here any more.
 
   The app supports two accounts — a Cadence sign-in or a Spotify Client ID + Secret — and asks which
-  one you want on first launch (login_ui.choose_mode). Collecting Spotify credentials at install time
+  one you want on first launch (ui/login.py choose_mode). Collecting Spotify credentials at install time
   forced a choice the user may not want, and left a Cadence user unable to finish setup at all. The
   app writes its own .env when you pick Spotify, so this installer now only installs files. }
 
@@ -99,21 +105,41 @@ end;
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
+  EnvFile: String;
+  ConfigFile: String;
 begin
-  if CurUninstallStep = usPostUninstall then
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+
+  { An UPGRADE gets here too: InitializeSetup runs the old uninstaller with /VERYSILENT. Asking then
+    is wrong twice over — /SUPPRESSMSGBOXES does not suppress a plain MsgBox, so the install stalls
+    behind a hidden dialog, and answering Yes wipes the settings of an app that is being kept. Nobody
+    uninstalling silently is there to be asked, so silent means "leave the data alone". }
+  if UninstallSilent then
+    Exit;
+
+  // Both places the app keeps things: beside the exe when that folder is writable (config.data_dir),
+  // and AppData otherwise. An installed copy under %LOCALAPPDATA%\Programs is writable, so the
+  // config normally sits in the app folder -- left behind, it is an encrypted session nobody can use
+  // and a folder that survives the uninstall for no reason.
+  // (// and not { }, because a brace comment ends at the first closing brace, and an app-dir constant
+  //  written in one would end it in the middle of a sentence. It did, and the compile failed here.)
+  DataDir := ExpandConstant('{localappdata}\MusicAgent');
+  EnvFile := ExpandConstant('{app}\.env');
+  ConfigFile := ExpandConstant('{app}\cadence_config.txt');
+  if (not DirExists(DataDir)) and (not FileExists(EnvFile)) and (not FileExists(ConfigFile)) then
+    Exit;
+
+  if MsgBox(
+    'Do you want to remove Music Agent settings and credentials?' + #13#10 +
+    '(saved sign-in, Spotify credentials, OAuth tokens, and your .env if you wrote one)' + #13#10 + #13#10 +
+    'Locations:' + #13#10 + DataDir + #13#10 + EnvFile,
+    mbConfirmation, MB_YESNO
+  ) = IDYES then
   begin
-    DataDir := ExpandConstant('{localappdata}\MusicAgent');
     if DirExists(DataDir) then
-    begin
-      if MsgBox(
-        'Do you want to remove Music Agent application data?' + #13#10 +
-        '(saved sign-in, Spotify credentials, OAuth tokens, logs)' + #13#10 + #13#10 +
-        'Location: ' + DataDir,
-        mbConfirmation, MB_YESNO
-      ) = IDYES then
-      begin
-        DelTree(DataDir, True, True, True);
-      end;
-    end;
+      DelTree(DataDir, True, True, True);
+    DeleteFile(EnvFile);
+    DeleteFile(ConfigFile);
   end;
 end;
