@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "music-agent"
+version = "4.1.0"
+description = "Global hotkeys for whatever is playing your music - a Cadence account, or Spotify Connect"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ERFFFFF" }]
+
+# EMPTY, and that is the headline. The CLI and both backends run on the standard library alone:
+# `requests` was replaced by music_agent/net/httpmin.py and `keyboard` by music_agent/win32/hotkeys.py.
+# Nothing here is aspirational - `python -m music_agent` works on a clean interpreter.
+dependencies = []
+
+[project.optional-dependencies]
+# Only the tray app needs anything, and only because a GUI toolkit is not something to hand-roll.
+# `keyboard` survives here alone: ui/settings.py RECORDS a keypress, which RegisterHotKey cannot do.
+gui = [
+    "customtkinter==6.0.0",
+    "pystray==0.19.5",
+    "Pillow==12.3.0",
+    "keyboard==0.13.5",
+]
+
+[project.scripts]
+music-agent = "music_agent.cli:main"
+
+[project.gui-scripts]
+# gui-scripts, not scripts: this one gets the pythonw launcher, so a double-click opens no console.
+music-agent-tray = "music_agent.ui.tray:main"
+
+[project.urls]
+Homepage = "https://github.com/ERFFFFF/Music_Agent"
+
+[tool.setuptools.packages.find]
+include = ["music_agent*"]
+
+[tool.ruff]
+line-length = 108              # the width this codebase is already written and commented at
+target-version = "py310"

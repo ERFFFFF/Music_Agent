@@ -16,8 +16,8 @@ import threading
 
 import customtkinter as ctk
 
-from cadence import CadenceError, client_from_config, normalize_url
-from config import (DEFAULT_REDIRECT_URI, config_path, load_config, save_config,
+from music_agent.backends.cadence import CadenceError, client_from_config, normalize_url
+from music_agent.config import (DEFAULT_REDIRECT_URI, config_path, load_config, save_config,
                     save_spotify_credentials)
 
 _lock = threading.Lock()

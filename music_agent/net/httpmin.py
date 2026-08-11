@@ -6,7 +6,7 @@ interpreter already ships. Removing it is the same trade the project already mad
 `appdirs`, `ratelimit` and `python-dotenv`: a named ceiling instead of a package.
 
     ponytail: this is a shim, not an HTTP library. It covers exactly what cadence.py and
-    spotify_backend.py call — GET/POST/PUT/DELETE, JSON and form bodies, query params, a cookie jar,
+    spotify.py call — GET/POST/PUT/DELETE, JSON and form bodies, query params, a cookie jar,
     and the redirect chain. No streaming, no multipart, no connection pooling, no automatic retries.
     Reach for `requests` again if any of those ever become the shortest path.
 
@@ -145,7 +145,7 @@ def use_windows_transport(enabled):
     _transport = None
     if not enabled:
         return False
-    import winhttp            # local: winhttp imports FROM this module, so a top-level import cycles
+    from music_agent.net import winhttp   # local: winhttp imports FROM here, so a top-level import cycles
 
     if not winhttp.available():
         return False
@@ -281,7 +281,7 @@ def selftest():
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         # A 4xx is data. Turning it into an exception is what would break every "403 -> Premium" style
-        # message in spotify_backend.
+        # message in spotify.
         r = request("GET", base + "/403")
         assert r.status_code == 403 and r.json()["error"] == "nope"
         assert r.headers.get("retry-after") == "7", "header lookup must be case-insensitive"

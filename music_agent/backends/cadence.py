@@ -11,7 +11,7 @@ on a locked-down network where Spotify itself is blocked but Cadence (plain HTTP
 
 Cross-platform on purpose: nothing here is Windows-specific and nothing here is a third-party package
 (httpmin is stdlib `urllib` wearing a `requests` shape), so this module can be exercised off Windows —
-the hotkey/tray layer in main.py is the Windows-only part.
+the hotkey/tray layer in ui/tray.py is the Windows-only part.
 """
 
 import logging
@@ -19,10 +19,10 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-import httpmin
-from config import normalize_url                        # noqa: F401 — re-exported; login_ui imports it
+from music_agent.net import httpmin
+from music_agent.config import normalize_url                        # noqa: F401 — re-exported; login_ui imports it
 
-# Every command the Cadence backend accepts (backend/main.py `_REMOTE_CMDS`). Anything else is a typo,
+# Every command the Cadence backend accepts (Cadence's own backend/main.py `_REMOTE_CMDS`). Anything else is a typo,
 # and failing here beats a 422 from the server.
 COMMANDS = ("play_pause", "next", "previous", "like", "stop")
 
@@ -229,7 +229,7 @@ def client_from_config(cfg):
     `cadence_session` and written back whenever Cadence re-signs it. Lives here rather than in the UI
     layer because it is plumbing, and because it has to be exercisable without a GUI toolkit installed.
     """
-    from config import update_config
+    from music_agent.config import update_config
 
     def remember(cookie):
         # update_config, not save_config(cfg): this fires long after the client was built, and writing
@@ -246,8 +246,8 @@ def client_from_config(cfg):
 
 
 class CadenceController:
-    """The five hotkey actions, spoken in Cadence. Same shape as SpotifyController (spotify_backend.py)
-    so main.py binds hotkeys without caring which service is behind them.
+    """The five hotkey actions, spoken in Cadence. Same shape as SpotifyController (spotify.py)
+    so ui/tray.py binds hotkeys without caring which service is behind them.
 
     Every method returns the notification text to show, or None for "say nothing" — errors come back as
     a message rather than an exception because these run on the hotkey thread, where an uncaught
@@ -259,7 +259,7 @@ class CadenceController:
         # Set by an action that failed, cleared by the next one that runs. Every method here returns
         # TEXT rather than raising, which is right for a hotkey and leaves a *script* unable to tell
         # "Like toggled" from "Cadence session expired" — both are just a string. The CLI reads this
-        # to choose an exit code, so `music_agent_cli.py play || alert-me` actually fires.
+        # to choose an exit code, so `music_agent/cli.py play || alert-me` actually fires.
         self.last_error = None
 
     def _fail(self, message):

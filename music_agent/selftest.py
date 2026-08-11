@@ -24,8 +24,9 @@ import urllib.request
 from types import SimpleNamespace
 from unittest import mock
 
+# The package directory; PROJECT is its parent, which is what sys.path needs.
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
 
 FAILURES = []
 
@@ -63,9 +64,11 @@ def names_resolve():
     """
     known_globals = {"__file__", "__name__", "__doc__"}
     problems = []
-    for name in ("main", "music_agent_cli", "config", "cadence", "spotify_backend", "httpmin",
-                 "winhotkeys", "login_ui", "settings_ui"):
-        path = os.path.join(HERE, name + ".py")
+    # Walk the PACKAGE rather than a hand-kept list -- a module added later is checked without
+    # anyone remembering to add it here, which is the only way this stays true.
+    for path in sorted(os.path.join(root, f) for root, _d, fs in os.walk(HERE)
+                       for f in fs if f.endswith(".py")):
+        name = os.path.relpath(path, HERE).replace(os.sep, ".")[:-3]
         # encoding= is not optional: these files are UTF-8 and Windows would otherwise decode them
         # with cp1252, where this check dies on the first em dash in a comment.
         top = symtable.symtable(open(path, encoding="utf-8").read(), path, "exec")
@@ -87,8 +90,8 @@ def names_resolve():
 # --------------------------------------------------------------------------------- 2. Cadence login
 def cadence_login():
     """Sign in, restart, still signed in, sign out — the path a user actually walks."""
-    import cadence
-    import config
+    from music_agent.backends import cadence
+    from music_agent import config
 
     def transport(self, method, url, **kw):
         if url.endswith("/api/login"):
@@ -110,7 +113,7 @@ def cadence_login():
             cfg["cadence_url"] = "cadence.example"        # bare host — must gain https on its own
             config.save_config(cfg)   # every real caller saves before signing in; update_config does
                                       # not resurrect unsaved edits, and must not
-            with mock.patch("httpmin.Session.request", transport):
+            with mock.patch("music_agent.net.httpmin.Session.request", transport):
                 client = cadence.client_from_config(cfg)
                 assert client.base_url == "https://cadence.example", client.base_url
                 assert client.login("bob", "hunter2")["username"] == "bob"
@@ -139,8 +142,8 @@ def cadence_login():
 
 def cadence_login_refused():
     """A wrong password must not leave anything behind."""
-    import cadence
-    import config
+    from music_agent.backends import cadence
+    from music_agent import config
 
     real_app_dir = config.app_dir
     try:
@@ -148,7 +151,7 @@ def cadence_login_refused():
             config.app_dir = lambda: d
             cfg = config.load_config()
             cfg["cadence_url"] = "https://cadence.example"
-            with mock.patch("httpmin.Session.request", lambda *a, **k: reply(401, None, b"")):
+            with mock.patch("music_agent.net.httpmin.Session.request", lambda *a, **k: reply(401, None, b"")):
                 try:
                     cadence.client_from_config(cfg).login("bob", "wrong")
                     raise AssertionError("a 401 must raise, not return")
@@ -166,9 +169,9 @@ def credential_write_does_not_clobber():
     Cadence cookie slides on every command, the Spotify refresh token rotates. Writing that captured
     dict wholesale silently undid any hotkey or mode saved in between. This is the regression test.
     """
-    import cadence
-    import config
-    import spotify_backend
+    from music_agent.backends import cadence
+    from music_agent import config
+    from music_agent.backends import spotify
 
     real_app_dir = config.app_dir
     try:
@@ -179,7 +182,7 @@ def credential_write_does_not_clobber():
             config.save_config(cfg)
 
             client = cadence.client_from_config(cfg)          # captures cfg as it is now
-            spotify = spotify_backend.controller_from_config(
+            spotify = spotify.controller_from_config(
                 {**cfg, "spotify_client_id": "cid", "spotify_client_secret": "cs"})
 
             # ...meanwhile the Settings window saves a new hotkey and a new mode
@@ -208,7 +211,7 @@ def credentials_encrypted_at_rest():
     that SECRET_FIELDS covers every credential in DEFAULTS, that save_config seals all of them, that
     load_config unseals them, and that mode/hotkeys deliberately stay readable.
     """
-    import config
+    from music_agent import config
 
     # Any field holding a credential must be in SECRET_FIELDS. Named explicitly rather than pattern-
     # matched, so adding one to DEFAULTS and forgetting to seal it fails right here.
@@ -257,7 +260,7 @@ def credentials_encrypted_at_rest():
 
 def corrupt_config_never_raises():
     """load_config's contract: any garbage on disk yields defaults rather than stopping the launch."""
-    import config
+    from music_agent import config
 
     real_app_dir = config.app_dir
     try:
@@ -277,10 +280,10 @@ def corrupt_config_never_raises():
 # --------------------------------------------------------------------------------- 3. Spotify OAuth
 def spotify_consent(port=8899, wrong_state=False):
     """Drive the real local callback server: browser -> redirect -> code -> token."""
-    import spotify_backend
+    from music_agent.backends import spotify
 
     saved = []
-    auth = spotify_backend._Auth("cid", "csecret", f"http://127.0.0.1:{port}/callback", "", saved.append)
+    auth = spotify._Auth("cid", "csecret", f"http://127.0.0.1:{port}/callback", "", saved.append)
     opened = {}
 
     def browser(url):
@@ -301,12 +304,12 @@ def spotify_consent(port=8899, wrong_state=False):
 
     token = {"access_token": "AT", "expires_in": 3600, "refresh_token": "RT"}
     with mock.patch("webbrowser.open", browser), \
-         mock.patch("httpmin.post", return_value=reply(200, token)) as post:
+         mock.patch("music_agent.net.httpmin.post", return_value=reply(200, token)) as post:
         if wrong_state:
             try:
                 auth.token()
                 raise AssertionError("a mismatched state must be refused")
-            except spotify_backend.SpotifyError as e:
+            except spotify.SpotifyError as e:
                 assert "security check" in str(e), str(e)
             return
         assert auth.token() == "AT"
@@ -323,18 +326,18 @@ def spotify_consent(port=8899, wrong_state=False):
 # --------------------------------------------------------------------------------- run everything
 def main():
     print("module self-checks")
-    import cadence
-    import config
-    import httpmin
-    import music_agent_cli
-    import spotify_backend
-    checks = [("httpmin", httpmin.selftest), ("config", config.demo), ("cadence", cadence.selftest),
-              ("spotify_backend", spotify_backend.selftest), ("cli", music_agent_cli.selftest)]
+    from music_agent.backends import cadence
+    from music_agent import config
+    from music_agent.net import httpmin
+    from music_agent import cli
+    from music_agent.backends import spotify
+    checks = [("net.httpmin", httpmin.selftest), ("config", config.demo), ("backends.cadence", cadence.selftest),
+              ("spotify", spotify.selftest), ("cli", cli.selftest)]
     if os.name == "nt":
         # RegisterHotKey is the whole module; there is nothing to check where it doesn't exist, and
         # `import ctypes.wintypes` raises off Windows before it could say so.
-        import winhotkeys
-        checks.insert(1, ("winhotkeys", winhotkeys.selftest))
+        from music_agent.win32 import hotkeys
+        checks.insert(1, ("win32.hotkeys", hotkeys.selftest))
     for name, fn in checks:
         check(name, fn)
 

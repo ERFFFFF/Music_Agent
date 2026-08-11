@@ -1,28 +1,28 @@
 """Music Agent without the GUI — same config, same backends, same actions, no packages at all.
 
-The tray app (main.py) and this share everything below the UI: the config, the two controllers, and
+The tray app (ui/tray.py) and this share everything below the UI: the config, the two controllers, and
 config.ACTIONS. What they don't share is dependencies. Nothing in this file's import graph reaches
 customtkinter, pystray, PIL or `keyboard`, and the HTTP underneath is httpmin (stdlib `urllib`), so
 requirements-cli.txt installs **nothing** — the interpreter already ships everything this needs. That
-is the reason this is a separate entry point rather than a --nogui flag on main.py: a flag would still
+is the reason this is a separate entry point rather than a --nogui flag on ui/tray.py: a flag would still
 have paid for the GUI imports at the top of the module.
 
 Credentials come from a `.env` beside the app and stay there — see config.ENV_FIELDS. Nothing in this
 file, and nothing it writes, contains a server address, an account or a key.
 
-    python music_agent_cli.py                          START HERE — stays running, listens for your
+    python -m music_agent                          START HERE — stays running, listens for your
                                                        hotkeys until Ctrl+C. Same as `run`.
 
-    python music_agent_cli.py status                   what's configured, and where it came from
-    python music_agent_cli.py login | logout           sign in / out of the configured service
-    python music_agent_cli.py play | pause | toggle    start, stop, or flip playback
-    python music_agent_cli.py next | prev | like | now  one-shot control, no hotkeys involved
-    python music_agent_cli.py devices                  Spotify Connect devices this account can see
-    python music_agent_cli.py get [KEY] | set KEY VALUE   the config file, field by field
-    python music_agent_cli.py hotkeys [ACTION COMBO]   list, or rebind one
-    python music_agent_cli.py run                      the hotkey agent itself, headless (Ctrl+C stops)
-    python music_agent_cli.py setup                    interactive, for a machine with no .env
-    python music_agent_cli.py selftest                 offline checks, no config touched
+    python -m music_agent status                   what's configured, and where it came from
+    python -m music_agent login | logout           sign in / out of the configured service
+    python -m music_agent play | pause | toggle    start, stop, or flip playback
+    python -m music_agent next | prev | like | now  one-shot control, no hotkeys involved
+    python -m music_agent devices                  Spotify Connect devices this account can see
+    python -m music_agent get [KEY] | set KEY VALUE   the config file, field by field
+    python -m music_agent hotkeys [ACTION COMBO]   list, or rebind one
+    python -m music_agent run                      the hotkey agent itself, headless (Ctrl+C stops)
+    python -m music_agent setup                    interactive, for a machine with no .env
+    python -m music_agent selftest                 offline checks, no config touched
 """
 
 import argparse
@@ -32,10 +32,10 @@ import os
 import sys
 import time
 
-import applog
-import config
-from cadence import CadenceController, CadenceError, client_from_config
-from config import (ACTIONS, DEFAULT_HOTKEYS, DEFAULTS, MODES, config_path, env_config, env_path,
+from music_agent import log
+from music_agent import config
+from music_agent.backends.cadence import CadenceController, CadenceError, client_from_config
+from music_agent.config import (ACTIONS, DEFAULT_HOTKEYS, DEFAULTS, MODES, config_path, env_config, env_path,
                     load_config, normalize_url, save_config, save_spotify_credentials)
 
 # Fields `get` and `status` report as "set" rather than printing. DERIVED from the list of things
@@ -90,7 +90,7 @@ def _cadence_sign_in(client, cfg, interactive=True):
     if not (username and password):
         if not interactive:
             _die(f"Not signed in to Cadence, and no USERNAME / PASSWORD in {env_path() or 'a .env'} — "
-                 f"run: python music_agent_cli.py login")
+                 f"run: python -m music_agent login")
         username = input("Username: ").strip()
         password = getpass.getpass("Password: ")
     try:
@@ -111,7 +111,7 @@ def _controller(cfg):
             _cadence_sign_in(client, cfg, interactive=False)
         return CadenceController(client)
 
-    from spotify_backend import SpotifyConfigError, controller_from_config
+    from music_agent.backends.spotify import SpotifyConfigError, controller_from_config
 
     try:
         return controller_from_config(cfg)
@@ -223,7 +223,7 @@ def cmd_status(cfg, args):
 def cmd_login(cfg, args):
     """Sign in to whichever service `mode` selects — a Cadence account, or Spotify's OAuth consent."""
     if cfg["mode"] == "spotify":
-        from spotify_backend import SpotifyConfigError, SpotifyError, controller_from_config
+        from music_agent.backends.spotify import SpotifyConfigError, SpotifyError, controller_from_config
 
         try:
             controller_from_config(cfg).auth.token()
@@ -234,7 +234,7 @@ def cmd_login(cfg, args):
 
     if not cfg.get("cadence_url"):
         _die(f"No Cadence server set — put DOMAIN in a .env beside the app, or run: "
-             f"python music_agent_cli.py setup")
+             f"python -m music_agent setup")
     me = _cadence_sign_in(client_from_config(cfg), cfg)
     print(f"Signed in as {me.get('username')}. Session saved to {config_path()}")
 
@@ -300,7 +300,7 @@ def cmd_hotkeys(cfg, args):
         _die(f"{args.action} is set by {config.ENV_HOTKEY_PREFIX}{args.action.upper()} in "
              f"{env_path()}. {_env_note()}")
     if not args.combo:
-        _die(f"Give a combination too, e.g.: python music_agent_cli.py hotkeys {args.action} ctrl+alt+p")
+        _die(f"Give a combination too, e.g.: python -m music_agent hotkeys {args.action} ctrl+alt+p")
     clash = next((a for a, c in cfg["hotkeys"].items() if c == args.combo and a != args.action), None)
     if clash:
         _die(f"{args.combo!r} is already bound to {clash}.")
@@ -378,7 +378,7 @@ def cmd_run(cfg, args):
     """The hotkey agent, headless. Win32 RegisterHotKey via winhotkeys — imported here, not at the top,
     because it is the one Windows-only module in this file's graph and every other command runs
     anywhere."""
-    import winhotkeys
+    from music_agent.win32 import hotkeys
 
     controller = _controller(cfg)
 
@@ -390,7 +390,7 @@ def cmd_run(cfg, args):
         bindings[combo] = hotkey_action(controller, method, action_id)
         labels[combo] = action_id
     if not bindings:
-        _die("No hotkeys bound — run: python music_agent_cli.py hotkeys")
+        _die("No hotkeys bound — run: python -m music_agent hotkeys")
 
     for combo, action_id in labels.items():
         print(f"  {combo:<22} {action_id}")
@@ -399,10 +399,10 @@ def cmd_run(cfg, args):
     print(f"Every press prints a line below.{hint}\n")
     # Anything that fails to register reports here, right after the list above and before the loop
     # blocks — one combination another app already owns must not take the other four with it.
-    bound = winhotkeys.listen(bindings, on_error=lambda combo, why: print(
+    bound = hotkeys.listen(bindings, on_error=lambda combo, why: print(
         f"  {combo:<22} NOT bound — {why}", file=sys.stderr))
     if not bound:
-        _die("Not one hotkey could be registered. Rebind them: python music_agent_cli.py hotkeys")
+        _die("Not one hotkey could be registered. Rebind them: python -m music_agent hotkeys")
     print("\nStopped.")
 
 
@@ -415,7 +415,7 @@ def build_parser():
                         help="everything -v shows, plus every HTTP call, its status and its timing")
     # No verb runs the hotkey agent. That is what this program IS — you start it, it stays up, it
     # listens. The one-shot verbs are the extra, useful for scripting; making them mandatory meant the
-    # obvious command (`python music_agent_cli.py`) printed a usage error at someone whose actual
+    # obvious command (`python -m music_agent`) printed a usage error at someone whose actual
     # intent was the default behaviour of the whole app.
     parser.set_defaults(handler=cmd_run)
     sub = parser.add_subparsers(dest="command", required=False,
@@ -461,9 +461,9 @@ def selftest():
     instead of writing it."""
     import tempfile
 
-    import cadence
-    import config as config_module
-    import spotify_backend
+    from music_agent.backends import cadence
+    from music_agent import config as config_module
+    from music_agent.backends import spotify
 
     parser = build_parser()
     for verb, _help, _handler in (("status", 0, 0), ("login", 0, 0), ("logout", 0, 0),
@@ -526,16 +526,16 @@ def selftest():
 
     # cmd_control reads .last_error to pick an exit code; a backend without one would make every
     # command exit 0, including the ones that failed.
-    for backend in (cadence.CadenceController, spotify_backend.SpotifyController):
+    for backend in (cadence.CadenceController, spotify.SpotifyController):
         assert "last_error" in backend.__init__.__code__.co_names, f"{backend.__name__}.last_error"
 
     # A verb that names a method only ONE backend has is a command that works in one mode and
     # tracebacks in the other — which is exactly what mode-agnostic front ends must not do.
     for _verb, method, _help in VERBS:
-        for backend in (cadence.CadenceController, spotify_backend.SpotifyController):
+        for backend in (cadence.CadenceController, spotify.SpotifyController):
             assert callable(getattr(backend, method, None)), f"{backend.__name__} has no {method}()"
     for method in ACTIONS.values():
-        for backend in (cadence.CadenceController, spotify_backend.SpotifyController):
+        for backend in (cadence.CadenceController, spotify.SpotifyController):
             assert callable(getattr(backend, method, None)), f"{backend.__name__} has no {method}()"
 
     real_app_dir = config_module.app_dir
@@ -594,20 +594,22 @@ def selftest():
         # every shortcut the .env can set must be one winhotkeys can actually parse, or `run` binds
         # nothing and only says so at launch
         if os.name == "nt":
-            import winhotkeys
+            from music_agent.win32 import hotkeys
             for combo in config_module.DEFAULT_HOTKEYS.values():
-                winhotkeys.parse(combo)
+                hotkeys.parse(combo)
+
+    config_module.app_dir = real_app_dir     # restore FIRST: the checks below read the real project
 
     # Every action, and `mode`, must be settable from the .env — that is the promise the docs make.
     # ENV_HOTKEYS is derived from ACTIONS so it cannot drift, but .env.example is hand-written and can:
     # a shortcut nobody documents is one nobody knows exists.
     assert set(config_module.ENV_HOTKEYS.values()) == set(ACTIONS), config_module.ENV_HOTKEYS
     assert "mode" in config_module.ENV_FIELDS.values(), "MODE must be settable from the .env"
-    example = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.example"),
-                   encoding="utf-8").read()
+    # app_dir() already knows where the project root is, frozen or not. Recomputing it from __file__
+    # is what broke when this module moved into a package, so ask the one function that knows.
+    example = open(os.path.join(config.app_dir(), ".env.example"), encoding="utf-8").read()
     undocumented = [k for k in (*config_module.ENV_HOTKEYS, "MODE") if k not in example]
     assert not undocumented, f"not in .env.example: {undocumented}"
-    config_module.app_dir = real_app_dir
     print("cli self-check ok")
 
 
@@ -625,12 +627,19 @@ def main(argv=None):
     # Quiet by default. Without a handler, logging's last-resort one prints WARNING and above to
     # stderr — so every backend error appeared TWICE: once as `ERROR:root:...` and once as the
     # sentence this file prints itself. -v turns the log back on, at the level that is worth reading.
-    level = logging.DEBUG if args.debug else logging.INFO if args.verbose else logging.CRITICAL
-    logging.basicConfig(level=level, format=applog.FORMAT, datefmt=applog.DATEFMT)
+    # The CONSOLE HANDLER carries the level, not the root logger. `log.install` needs the root at
+    # DEBUG to fill its buffer, and a handler with no level of its own passes everything the logger
+    # allows — so with `basicConfig(level=...)` alone, switching the buffer on made plain `status`
+    # print DEBUG lines nobody asked for. Filter where the filtering is actually wanted.
+    console = logging.StreamHandler()
+    console.setLevel(logging.DEBUG if args.debug else
+                     logging.INFO if args.verbose else logging.CRITICAL)
+    console.setFormatter(logging.Formatter(log.FORMAT, log.DATEFMT))
+    logging.getLogger().addHandler(console)
     # The in-memory buffer runs regardless of what the console shows: it costs a deque of strings, and
     # it is the SAME buffer the tray app's Logs page displays — so a problem reported from one front
     # end reads identically in the other.
-    applog.install(logging.DEBUG)
+    log.install(logging.DEBUG)
 
     if args.command == "selftest":
         return selftest()

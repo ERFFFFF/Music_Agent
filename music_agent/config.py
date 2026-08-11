@@ -47,8 +47,8 @@ DEFAULT_HOTKEYS = {
 }
 
 # hotkey/config action id -> the controller method it calls. Both backends implement all five
-# (cadence.CadenceController, spotify_backend.SpotifyController), and both front ends — the tray app and
-# music_agent_cli.py — bind through this one map so a renamed action can't half-work.
+# (cadence.CadenceController, spotify.SpotifyController), and both front ends — the tray app and
+# music_agent/cli.py — bind through this one map so a renamed action can't half-work.
 ACTIONS = {
     "play_pause": "play_pause",
     "next_track": "next_track",
@@ -217,7 +217,7 @@ def apply_proxy(cfg):
     #
     # Imported here rather than at the top so config.py stays the module with no app dependencies,
     # and so a machine that never asks for this never loads either transport module.
-    import httpmin
+    from music_agent.net import httpmin
 
     wanted = (cfg.get("proxy_auth") or "").strip().lower().replace("_", "-") in PROXY_AUTH_CURRENT_USER
     # Always called, including with False: the default transport has to be restored if the setting is
@@ -342,14 +342,16 @@ def app_dir():
     """
     if getattr(sys, "frozen", False):
         return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+    # Source run: the PROJECT root, one level above the package this file lives in. Not the package
+    # directory -- the .env and cadence_config.txt belong beside the project, not inside the code.
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def find_icon(name="poulet.ico"):
     """The app icon: beside the exe first (so a portable copy can swap it), then inside the PyInstaller
     bundle, then the source folder for a dev run. None when there is none — every caller has a fallback.
 
-    Lives here, with the other path logic, because main.py and settings_ui.py each had their own copy
+    Lives here, with the other path logic, because main.py and settings.py each had their own copy
     and they had already drifted apart.
     """
     for base in (app_dir(), getattr(sys, "_MEIPASS", "")):

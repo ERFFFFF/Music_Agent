@@ -4,11 +4,11 @@ import tkinter
 import customtkinter as ctk
 import keyboard
 
-import applog
-import config as config_module
+from music_agent import log
+from music_agent import config as config_module
 
-from cadence import client_from_config
-from config import (load_config, save_config, find_icon, env_config, env_path, DEFAULT_HOTKEYS,
+from music_agent.backends.cadence import client_from_config
+from music_agent.config import (load_config, save_config, find_icon, env_config, env_path, DEFAULT_HOTKEYS,
                     ENV_HOTKEY_PREFIX, MODES)
 
 _MODIFIERS = frozenset({
@@ -239,9 +239,9 @@ class SettingsWindow:
         ).pack(side="right", padx=(0, 10))
 
     def _build_logs_tab(self, parent):
-        """Live log, in memory, gone when the app exits — see applog.py for why there is no file.
+        """Live log, in memory, gone when the app exits — see log.py for why there is no file.
 
-        The window POLLS `applog.since()` on a Tk timer rather than being called back when a line is
+        The window POLLS `log.since()` on a Tk timer rather than being called back when a line is
         written. Lines arrive from the keyboard thread and from whatever thread an HTTP call is on,
         and Tk may only be touched from the thread that owns the widget, so a callback straight into
         the textbox is a crash waiting for the right timing. A 400 ms poll is invisible to a reader
@@ -281,7 +281,7 @@ class SettingsWindow:
         window going away, which is what TclError means here.
         """
         try:
-            lines, self._log_cursor = applog.since(self._log_cursor)
+            lines, self._log_cursor = log.since(self._log_cursor)
             if lines:
                 self.log_box.configure(state="normal")
                 self.log_box.insert("end", "\n".join(lines) + "\n")
@@ -299,8 +299,8 @@ class SettingsWindow:
                 pass
 
     def _clear_logs(self):
-        applog.clear()
-        self._log_cursor = applog.since(self._log_cursor)[1]
+        log.clear()
+        self._log_cursor = log.since(self._log_cursor)[1]
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
@@ -440,10 +440,10 @@ class SettingsWindow:
         """The account button: sign in / sign out for Cadence, or the credentials form for Spotify.
         login_ui is imported here rather than at module load so the settings window keeps no
         import-time dependency on the network client."""
-        import login_ui
+        from music_agent.ui import login
 
         if self.mode_var.get() == "spotify":
-            self._with_hidden_window(lambda: login_ui.spotify_setup(self.config))
+            self._with_hidden_window(lambda: login.spotify_setup(self.config))
             return
         if self.account_btn.cget("text") == "Sign out":
             client_from_config(self.config).forget()
@@ -454,13 +454,13 @@ class SettingsWindow:
                 # and the next one wrote a fresh session straight back into the config.
                 self.on_save_callback()
             return
-        self._with_hidden_window(lambda: login_ui.sign_in(self.config))
+        self._with_hidden_window(lambda: login.sign_in(self.config))
 
     def _cloudflare(self):
         """Cloudflare Access service token — a dialog over this window, not a second root."""
-        import login_ui
+        from music_agent.ui import login
 
-        login_ui.cloudflare_dialog(self.root, self.config)
+        login.cloudflare_dialog(self.root, self.config)
         self._refresh_account()
 
     def _with_hidden_window(self, action):

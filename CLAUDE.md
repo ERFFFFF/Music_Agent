@@ -2,16 +2,16 @@
 
 Windows-only playback controller using global hotkeys. Runs as a background startup agent (PyInstaller exe).
 
-**Two modes** (`config.py` `mode`, switched in Settings — both expose the same five actions, so `main.py` is mode-agnostic):
+**Two modes** (`config.py` `mode`, switched in Settings — both expose the same five actions, so `ui/tray.py` is mode-agnostic):
 
 - **`cadence`** (default): drives a [Cadence](https://github.com/ERFFFFF/cadence) account. Cadence's audio *is* a browser tab, so the agent can't play anything itself — it POSTs an intent to `/api/remote/command` and the open Cadence tab drains it (~1/s) and performs it. No Spotify app and no secrets at build time → **the portable, single-exe mode** (`build_portable.ps1`), and it works where Spotify is blocked but HTTPS isn't.
 - **`spotify`**: the original path — this machine's Spotify Connect device via the Web API, using a Spotify app's Client ID + Secret (asked for on first launch, stored in the same config file).
 
 ## First-run setup (both builds)
 
-`main.is_configured()` is a config-dict check — a saved `cadence_session`, or a `spotify_client_id`.
-When it's false, `main.run_setup()` shows `login_ui.choose_mode()` and then either the Cadence sign-in
-or `login_ui.spotify_setup()` (which stores the keys via `config.save_spotify_credentials`).
+`config.is_configured()` is a config-dict check — a saved `cadence_session`, or a `spotify_client_id`.
+When it's false, `ui.tray.run_setup()` shows `ui.login.choose_mode()` and then either the Cadence sign-in
+or `ui.login.spotify_setup()` (which stores the keys via `config.save_spotify_credentials`).
 The **installer no longer collects Spotify credentials** — that page forced a Spotify-only setup and
 made Cadence unusable for an installed copy; the app asks instead, so both builds behave identically.
 Settings reopens either window; a Settings save rebuilds the controller with `setup=False` so a hotkey
@@ -19,20 +19,20 @@ edit never triggers the chooser.
 
 ## Cadence mode specifics
 
-- **`cadence.py`** is the whole mode: `CadenceClient` (HTTP + session persistence) and `CadenceController` (the five hotkey actions). Pure `requests`, no Windows API, so it can be exercised on any OS: `python cadence.py <url> <user> <pass>` runs a live self-check.
+- **`backends/cadence.py`** is the whole mode: `CadenceClient` (HTTP + session persistence) and `CadenceController` (the five hotkey actions). Pure `requests`, no Windows API, so it can be exercised on any OS: `python -m music_agent.backends.cadence <url> <user> <pass>` runs a live self-check.
 - **URL convention — the one that bites**: Cadence's public host is its Next UI, which rewrites `/api/:path*` to the backend root, stripping exactly ONE `/api`. So a backend route that is already `/api/...` needs it twice from outside (`/api/api/me`) and an unprefixed one needs it once (`/api/login`). `_request()` prepends `/api` to the backend's own path; don't "fix" it.
 - **Login sends an `Origin` header.** Cadence's `/login` rejects a request carrying neither Origin nor Referer (login-CSRF guard). A native client has to state its origin; this is not a bypass.
 - **Two files, and only one holds secrets**: `.env` beside the app is every credential (server, account, Cloudflare token, Spotify keys) plus the `HOTKEY_*` shortcuts — see `config.ENV_FIELDS` / `ENV_HOTKEYS` — read on every load and **never written to**. `cadence_config.txt` (JSON, same folder) holds what the app EARNS or the user picks: **session token**, refresh token, mode, and the hotkeys the `.env` doesn't name. See *What survives what* below before touching either. `config.app_dir()` = exe folder (frozen) or source folder (dev); AppData only when that is read-only. Written 0600; the session token in it IS a credential.
-- **Credentials are encrypted at rest with Windows DPAPI** (`config.SECRET_FIELDS`, `enc:<base64>` values): URL, session, Cloudflare and Spotify keys. `mode` and `hotkeys` stay plaintext so a copied config still looks sane and keeps its shortcuts. `CryptProtectData` keys the blob to the **Windows account**, so the trade-off is deliberate: no launch password and no key inside the exe, at the cost of secrets not surviving a move to another PC/user — `_decrypt` returns `""` there, `is_configured()` reads that as "not signed in", and the user signs in once. `load_config` re-encrypts a plaintext file on sight, so an upgraded install doesn't leave its old token lying around. `python config.py` covers all of it.
-- **Session, not password**: the signed cookie round-trips through the config (`CadenceClient(session=…, on_session=…)`, wired by `cadence.client_from_config`). The password is never stored. **Starlette only re-issues the cookie when the session is MODIFIED** (verified in 1.3.1's source; an authenticated GET returns no Set-Cookie) — so Cadence's `_touch_session` marks it modified on `/api/remote/command|state`, which is what makes the agent's saved session slide instead of dying 7 days after login. Not done on `/api/remote/pending` (the browser's 1/s poll).
-- **Cookie domain is load-bearing**: `_load_cookie` sets the restored cookie WITH the host domain. Without it the jar ends up with two entries named `session` (restored under domain "", server-issued under the host) and `cookies.get()` raises `CookieConflictError` — every hotkey dead on the second launch. `_cookie()` also reads defensively. `python cadence.py` runs the offline self-check that covers this.
+- **Credentials are encrypted at rest with Windows DPAPI** (`config.SECRET_FIELDS`, `enc:<base64>` values): URL, session, Cloudflare and Spotify keys. `mode` and `hotkeys` stay plaintext so a copied config still looks sane and keeps its shortcuts. `CryptProtectData` keys the blob to the **Windows account**, so the trade-off is deliberate: no launch password and no key inside the exe, at the cost of secrets not surviving a move to another PC/user — `_decrypt` returns `""` there, `is_configured()` reads that as "not signed in", and the user signs in once. `load_config` re-encrypts a plaintext file on sight, so an upgraded install doesn't leave its old token lying around. `python -m music_agent.config` covers all of it.
+- **Session, not password**: the signed cookie round-trips through the config (`CadenceClient(session=…, on_session=…)`, wired by `backends.cadence.client_from_config`). The password is never stored. **Starlette only re-issues the cookie when the session is MODIFIED** (verified in 1.3.1's source; an authenticated GET returns no Set-Cookie) — so Cadence's `_touch_session` marks it modified on `/api/remote/command|state`, which is what makes the agent's saved session slide instead of dying 7 days after login. Not done on `/api/remote/pending` (the browser's 1/s poll).
+- **Cookie domain is load-bearing**: `_load_cookie` sets the restored cookie WITH the host domain. Without it the jar ends up with two entries named `session` (restored under domain "", server-issued under the host) and `cookies.get()` raises `CookieConflictError` — every hotkey dead on the second launch. `_cookie()` also reads defensively. `python -m music_agent.backends.cadence` runs the offline self-check that covers this.
 - **`live` in the response is load-bearing**: it means a tab drained recently. False → the command will expire unperformed, and the agent says "No Cadence tab is open" instead of faking success.
 - **The server's pending queue drops the occasional command under burst — not ours to fix.** Measured 2026-08-11 against a stand-in tab polling `/api/remote/pending` at 0.8s: commands submitted **faster than the tab polls** are occasionally lost server-side (2 lost out of ~20 burst commands across two runs; one run sent 6 in 1.2s and 5 arrived). Commands spaced ≥1.2s apart arrived 100% of the time, over dozens of tries. `command()` returns `live=True` for the lost ones — the server accepted them, so nothing here can detect it. This is Cadence's queue, in the other repo, and it is invisible to real hotkey use (nobody presses 6 keys in 1.2s meaningfully). **Do not add a retry or an ack to compensate**: a retried playback intent is a *double* skip when the first one did land, which is worse than the drop.
-- **Cloudflare Access**: when the Cadence host sits behind it, no native app can do the interactive login — a **service token** (`CF-Access-Client-Id/Secret`) is the headless path. It's entered via `login_ui.cloudflare_dialog()`, reached from the **⚙ in the sign-in window's top-right corner** and from the Settings account row (one dialog, two entry points, so the token is reachable before AND after signing in). Values are held in StringVars the dialog writes on Save; `CadenceClient` reads them at construction, so a change applies to the next client build. Access answers a token-less request with a **302 to `*.cloudflareaccess.com`**, which the HTTP client FOLLOWS into a 200 full of HTML; `_blocked_by_access()` checks the `www-authenticate: Cloudflare-Access` header *and* the redirect chain, because otherwise a hard block looks like an empty response.
-- **Corporate proxy: `PROXY` in the .env, exported to the ENVIRONMENT, not plumbed through the code.** `config.apply_env_proxy()` (called from `load_config`, so both front ends get it) copies `PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` into `os.environ`, where the `ProxyHandler` already inside every opener `httpmin` builds picks them up — CONNECT tunnelling and `NO_PROXY` bypass included. Passing a proxy argument down through both backends would have been the same behaviour and three more parameters. The `.env` beats an existing shell variable, so "what the .env supplies, the .env owns" has no exception.
+- **Cloudflare Access**: when the Cadence host sits behind it, no native app can do the interactive login — a **service token** (`CF-Access-Client-Id/Secret`) is the headless path. It's entered via `ui.login.cloudflare_dialog()`, reached from the **⚙ in the sign-in window's top-right corner** and from the Settings account row (one dialog, two entry points, so the token is reachable before AND after signing in). Values are held in StringVars the dialog writes on Save; `CadenceClient` reads them at construction, so a change applies to the next client build. Access answers a token-less request with a **302 to `*.cloudflareaccess.com`**, which the HTTP client FOLLOWS into a 200 full of HTML; `_blocked_by_access()` checks the `www-authenticate: Cloudflare-Access` header *and* the redirect chain, because otherwise a hard block looks like an empty response.
+- **Corporate proxy: `PROXY` in the .env, exported to the ENVIRONMENT, not plumbed through the code.** `config.apply_proxy()` (called from `load_config`, so both front ends get it) copies `PROXY` / `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` into `os.environ`, where the `ProxyHandler` already inside every opener `httpmin` builds picks them up — CONNECT tunnelling and `NO_PROXY` bypass included. Passing a proxy argument down through both backends would have been the same behaviour and three more parameters. The `.env` beats an existing shell variable, so "what the .env supplies, the .env owns" has no exception.
   **The symptom of a missing proxy is a DNS error, not a timeout**: on a network that mandates one, the client is not supposed to resolve external names — the proxy does — so you get `getaddrinfo failed` (WSA 11001) and it reads as broken DNS. `status` therefore prints the proxy line even when unset. Verified 2026-08-11 against a real loopback CONNECT proxy: `PROXY=` sets both schemes and a live Cadence login went through it (3 CONNECTs observed), and a dead proxy FAILS rather than silently going direct. For NTLM/Kerberos proxies and PAC files, see `PROXY_AUTH` below.
-- **`PROXY_AUTH=current-user` swaps the whole TRANSPORT to `winhttp.py`** (ctypes over Windows' own HTTP stack). urllib speaks Basic proxy auth only — measured against proxies demanding NTLM and Negotiate, it never attempts either and just surfaces the 407 — and there is no way to add SSPI in pure Python. WinHTTP does it with one option flag, and reads PAC files too. `httpmin.use_windows_transport()` is the single branch; both backends and both front ends ride on it. OFF unless the .env asks, so every network that already works keeps the tested path.
-- **WINDOWS 10 CANNOT DO TLS 1.3, which makes that transport unusable against a TLS-1.3-only host.** Measured 2026-08-11: this project's own Cadence server rejects a TLS 1.2 handshake (`TLSV1_ALERT_PROTOCOL_VERSION`), Windows 10 build 19045's Schannel stops at 1.2, and so **every** Windows-stack client fails — WinHTTP, and `curl.exe` (Schannel) identically — while Python succeeds because it ships OpenSSL. It is not a certificate problem: relaxing every cert check changes nothing. `winhttp._ERRORS[12175]` says all of this in the error rather than printing a code. The fix is at the server (Cloudflare -> SSL/TLS -> Edge Certificates -> Minimum TLS Version -> 1.2) or to leave `PROXY_AUTH` unset. Windows 11 is unaffected. **Do not "fix" this in the client — there is nothing to fix there.**
+- **`PROXY_AUTH=current-user` swaps the whole TRANSPORT to `net/winhttp.py`** (ctypes over Windows' own HTTP stack). urllib speaks Basic proxy auth only — measured against proxies demanding NTLM and Negotiate, it never attempts either and just surfaces the 407 — and there is no way to add SSPI in pure Python. WinHTTP does it with one option flag, and reads PAC files too. `httpmin.use_windows_transport()` is the single branch; both backends and both front ends ride on it. OFF unless the .env asks, so every network that already works keeps the tested path.
+- **WINDOWS 10 CANNOT DO TLS 1.3, which makes that transport unusable against a TLS-1.3-only host.** Measured 2026-08-11: this project's own Cadence server rejects a TLS 1.2 handshake (`TLSV1_ALERT_PROTOCOL_VERSION`), Windows 10 build 19045's Schannel stops at 1.2, and so **every** Windows-stack client fails — WinHTTP, and `curl.exe` (Schannel) identically — while Python succeeds because it ships OpenSSL. It is not a certificate problem: relaxing every cert check changes nothing. `net.winhttp._ERRORS[12175]` says all of this in the error rather than printing a code. The fix is at the server (Cloudflare -> SSL/TLS -> Edge Certificates -> Minimum TLS Version -> 1.2) or to leave `PROXY_AUTH` unset. Windows 11 is unaffected. **Do not "fix" this in the client — there is nothing to fix there.**
 - **Scale-to-zero**: Cadence stops after ~30 min idle and Sablier answers with a **200 `text/html`** wake page. A non-JSON body therefore raises "Cadence is waking up" instead of being read as an empty result. No retry: an asleep stack means no open tab, so nothing could perform the command anyway. `TIMEOUT = 25s` covers the wake.
 
 ## Portability
@@ -52,19 +52,19 @@ Nothing else in this file is worth understanding before this table:
 | Reboot / log out | No effect — DPAPI decrypts for the same Windows account |
 | Copy to another PC or Windows user | Every `SECRET_FIELDS` value reads as `""`; `is_configured()` sees "not signed in". With the `.env` alongside, the re-sign-in is automatic and invisible |
 
-The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned* at browser consent and cannot be re-derived from the `.env`, so deleting the config file in Spotify mode costs one consent click. `spotify_backend._legacy_refresh_token()` softens that by adopting the old spotipy `%LOCALAPPDATA%\...\.cache` if one is still there.
+The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned* at browser consent and cannot be re-derived from the `.env`, so deleting the config file in Spotify mode costs one consent click. `backends.spotify._legacy_refresh_token()` softens that by adopting the old spotipy `%LOCALAPPDATA%\...\.cache` if one is still there.
 
 **The filename is historical.** It predates Spotify mode sharing the file and now describes a third of what it holds. Renaming it needs a migration read (like `legacy_paths()` does) or every existing install silently signs itself out — don't rename it casually.
 
 ## Tech Stack
 
 - **Python >=3.10,<3.16** on Windows 10+
-- **The CLI has NO third-party dependencies at all.** `requirements-cli.txt` is empty on purpose; `music_agent_cli.py` runs on the standard library. Verify with the site-packages sweep, not by eye:
-  `python -c "import music_agent_cli, winhotkeys, sys; print([m.__name__ for m in sys.modules.values() if 'site-packages' in (getattr(m,'__file__','') or '')])"` — only `_distutils_hack` / `pywin32_bootstrap` (injected by `.pth` files at interpreter startup) may appear.
+- **The CLI has NO third-party dependencies at all.** `requirements-cli.txt` is empty on purpose; `music_agent/cli.py` runs on the standard library. Verify with the site-packages sweep, not by eye:
+  `python -c "import music_agent.cli, music_agent.win32.hotkeys, sys; print([m.__name__ for m in sys.modules.values() if 'site-packages' in (getattr(m,'__file__','') or '')])"` — only `_distutils_hack` / `pywin32_bootstrap` (injected by `.pth` files at interpreter startup) may appear.
 - **httpmin.py** — the HTTP layer, `urllib.request` in a `requests` shape. Both backends import it, so the GUI is dependency-free here too.
-- **winhotkeys.py** — Win32 `RegisterHotKey` + a message loop. The CLI's hotkeys.
-- **keyboard** — the TRAY app only. It survives because `settings_ui.py` **records** a combination as you press it, which needs a keyboard hook; `RegisterHotKey` cannot do that.
-- **customtkinter / pystray / Pillow** — the tray app only (`requirements-gui.txt`). `music_agent_cli.py` imports none of them.
+- **win32/hotkeys.py** — Win32 `RegisterHotKey` + a message loop. The CLI's hotkeys.
+- **keyboard** — the TRAY app only. It survives because `ui/settings.py` **records** a combination as you press it, which needs a keyboard hook; `RegisterHotKey` cannot do that.
+- **customtkinter / pystray / Pillow** — the tray app only (`requirements-gui.txt`). `music_agent/cli.py` imports none of them.
 - **ctypes** — Windows shell notifications, single-instance mutex, DPAPI, hotkeys
 - **PyInstaller** — pinned in `build_portable.ps1`, the only thing that uses it
 - **Inno Setup** — creates the Windows installer
@@ -73,9 +73,9 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 
 | Was | Now | Why |
 |-----|-----|-----|
-| `requests` | `httpmin.py` | ~140 lines of `urllib.request`. Both backends make small JSON calls and nothing else, so the package bought bytes, not behaviour. What it DID buy is spelled out in httpmin's docstring — non-2xx as data, empty bodies, the redirect chain, cookie domain collapsing — and each one has a self-check |
-| `keyboard` (CLI) | `winhotkeys.py` | `RegisterHotKey` is the OS's own global-hotkey API: no `WH_KEYBOARD_LL` hook over every keystroke, and no admin rights. Trade: a combination another app owns is REFUSED (error 1409) instead of stolen |
-| `spotipy` | hand-written calls in `spotify_backend.py` | Pulled in **redis** as a hard dependency, bundled into the exe, for a dozen REST calls and an OAuth exchange |
+| `requests` | `net/httpmin.py` | ~140 lines of `urllib.request`. Both backends make small JSON calls and nothing else, so the package bought bytes, not behaviour. What it DID buy is spelled out in httpmin's docstring — non-2xx as data, empty bodies, the redirect chain, cookie domain collapsing — and each one has a self-check |
+| `keyboard` (CLI) | `win32/hotkeys.py` | `RegisterHotKey` is the OS's own global-hotkey API: no `WH_KEYBOARD_LL` hook over every keystroke, and no admin rights. Trade: a combination another app owns is REFUSED (error 1409) instead of stolen |
+| `spotipy` | hand-written calls in `backends/spotify.py` | Pulled in **redis** as a hard dependency, bundled into the exe, for a dozen REST calls and an OAuth exchange |
 | `appdirs` | `config.appdata_dir()` | Unmaintained since 2020, for one `os.path.join`. Emits the identical path, so existing installs still migrate |
 | `ratelimit` | nothing | Throttled to 1 call/sec — a ceiling a hotkey press can't reach, while forcing a real `sleep` inside `play_pause` |
 | `python-dotenv` | `config._read_env()` | 20 lines, and it has to NOT strip inline `#` (passwords contain them) — which dotenv does |
@@ -83,41 +83,41 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 ## Project Structure
 
 ```
-main.py                 # Tray app: mode selection, hotkeys, tray, Windows notifications
-applog.py               # The log: an in-memory ring buffer. NO FILE, by design. All 3 front ends.
-music_agent_cli.py      # Same app without a GUI. NO ARGUMENTS = run the hotkey agent (the default
-                        # job); the verbs are extra one-shots for scripting
-httpmin.py              # The HTTP layer: urllib.request in a `requests` shape. No dependencies.
-winhotkeys.py           # Win32 RegisterHotKey + message loop. The CLI's hotkeys. Windows only.
-cadence.py              # Cadence mode: CadenceClient (HTTP/session) + CadenceController (actions)
-login_ui.py             # Cadence sign-in window (shown on launch when there's no session)
-settings_ui.py          # Settings window (mode, account, hotkey capture — the last `keyboard` user)
-spotify_backend.py      # Spotify mode: SpotifyController (OAuth + Web API actions)
-config.py               # THE config: the .env overlay + cadence_config.txt (DPAPI, migration, ACTIONS)
-build_portable.ps1      # dist\MusicAgent_portable.exe -- the TRAY app only, see below
-.env                    # (gitignored) EVERY credential + the HOTKEY_* shortcuts. Never written to.
+pyproject.toml          # metadata, the (empty) dependency list, and the console entry points
+tray_entry.py           # PyInstaller's entry script for the tray app -- a plain file, not a -m path
+.env                    # (gitignored) EVERY credential + MODE + HOTKEY_* + proxy. Never written to.
 .env.example            # ...documented, key by key
-cadence_config.txt      # (generated, gitignored) mode + session cookie + refresh token + the
-                        # hotkeys the .env does NOT name
-requirements-cli.txt    # Empty. The CLI's dependency list, in full.
-requirements-gui.txt    # customtkinter + pystray + Pillow + keyboard, for the tray app
+cadence_config.txt      # (generated, gitignored) session cookie + refresh token + what the .env omits
+music_agent/            # THE PACKAGE. Imports only ever point downwards through these layers:
+  __main__.py           #   `python -m music_agent`     -> cli.main()
+  cli.py                #   the CLI, and with no args the hotkey agent. No third-party imports.
+  config.py             #   the .env, cadence_config.txt, DPAPI, the proxy. Depends on net/ only.
+  log.py                #   the in-memory ring buffer every front end displays. No file, ever.
+  selftest.py           #   `python -m music_agent.selftest` -- runs every check below plus its own
+  net/                  #   httpmin.py (urllib, default) + winhttp.py (Windows stack, proxy SSPI)
+  backends/             #   cadence.py + spotify.py -- one controller each, identical contract
+  win32/                #   hotkeys.py -- RegisterHotKey. Windows-only, imported lazily.
+  ui/                   #   THE ONLY PART WITH DEPENDENCIES. tray.py, settings.py, login.py
+    __main__.py         #   `python -m music_agent.ui`  -> tray.main()
+requirements-cli.txt    # empty, and that is the point
+requirements-gui.txt    # customtkinter + pystray + Pillow + keyboard, for ui/ alone
+build_portable.ps1      # dist\MusicAgent_portable.exe -- the TRAY app only
 poulet.ico              # App icon for exe and installer
-Music Agent.spec        # PyInstaller build spec (gitignored)
 installer/              # Installer files (Inno Setup script, build script, info text)
 ```
 
-**The GUI/CLI split is load-bearing.** `music_agent_cli.py`'s import graph must never reach
+**The GUI/CLI split is load-bearing.** `music_agent/cli.py`'s import graph must never reach
 `customtkinter`, `pystray`, `PIL` or `keyboard` — that is what makes `requirements-cli.txt` empty.
 **The CLI is deliberately NOT frozen into an exe**: it has nothing to bundle, so an exe would only add
 a 10 MB artifact and a rebuild between every edit, to ship an interpreter the machine already has. It
 runs live from source; only the tray app earns a build, because it starts from a shortcut with no
 console. Anything both front ends need (`client_from_config`, `normalize_url`, `find_icon`,
-`is_configured`, `ACTIONS`) belongs in `config.py` or `cadence.py`, never in a `*_ui.py`. `winhotkeys`
+`is_configured`, `ACTIONS`) belongs in `config.py` or `backends/cadence.py`, never in `ui/`. `win32.hotkeys`
 is imported INSIDE `cmd_run`, not at module top, because it is the only Windows-only module in that
 graph and every other command runs anywhere. To check after a change:
 
 ```bash
-python selftest.py    # every module's self-check plus the cross-module ones
+python -m music_agent.selftest    # every module's self-check plus the cross-module ones
 ```
 
 ## Key Architecture Decisions
@@ -160,9 +160,9 @@ Browser consent runs on the **calling thread, which is the hotkey thread**. Ever
 - `Handler.timeout = 10` bounds *reading* a request. `HTTPServer.timeout` bounds only *waiting for a connection* — with it alone, any socket that connects and sends nothing (browser pre-connect, security-product probe, port scan) parks `handle_one_request()` in `rfile.readline()` forever and **every hotkey stays dead until the app is killed**. Reproduced before the fix; after it, an idle socket costs 10s and the real callback still lands.
 - The server binds `parsed.hostname`, not a hardcoded `127.0.0.1`, with `address_family` to match. An app registered on `http://[::1]:PORT` passed validation and could then never receive its redirect.
 - `_consent_lock` + `_consent_blocked_until`: one consent at a time, and a cooldown after a failure. Without it, every hotkey press during or after an abandoned consent queued another browser tab plus another full `CONSENT_TIMEOUT` block.
-- `music_agent_cli.py setup` authorises immediately after saving credentials, and `login` does it on demand, so the hotkey path normally never reaches consent at all.
-- **Every hotkey press prints a line** (`music_agent_cli.hotkey_action`), including the three actions whose controller returns `None` — those print `ok`. Only `show_current` and `toggle_like` return text, so before this a working `next_track` was indistinguishable from a key that never fired, and the only way to check was to go and listen to the music. Failures print `FAILED <reason>` to stderr, decided by `controller.last_error` rather than by the text (the controllers return a string either way). `flush=True` because stdout is block-buffered when redirected, and someone tailing a log to check their keys work must not wait for 8 KB. It is module level, not a closure in `cmd_run`, so the self-check can exercise it without a keyboard.
-- **A bare `python music_agent_cli.py` runs the hotkey agent.** The subparsers are `required=False` and the DEFAULT lives on the subparsers ACTION (`sub.default = "run"`), not on `parser.set_defaults` — argparse applies action defaults first, so a `set_defaults(command=...)` is overwritten by the subparser's own `None`. This exists because `required=True` made the obvious command print a usage error at someone whose intent was the app's whole purpose: start it, leave it up, press keys. The one-shot verbs are the extra.
+- `music_agent/cli.py setup` authorises immediately after saving credentials, and `login` does it on demand, so the hotkey path normally never reaches consent at all.
+- **Every hotkey press prints a line** (`cli.hotkey_action`), including the three actions whose controller returns `None` — those print `ok`. Only `show_current` and `toggle_like` return text, so before this a working `next_track` was indistinguishable from a key that never fired, and the only way to check was to go and listen to the music. Failures print `FAILED <reason>` to stderr, decided by `controller.last_error` rather than by the text (the controllers return a string either way). `flush=True` because stdout is block-buffered when redirected, and someone tailing a log to check their keys work must not wait for 8 KB. It is module level, not a closure in `cmd_run`, so the self-check can exercise it without a keyboard.
+- **A bare `python -m music_agent` runs the hotkey agent.** The subparsers are `required=False` and the DEFAULT lives on the subparsers ACTION (`sub.default = "run"`), not on `parser.set_defaults` — argparse applies action defaults first, so a `set_defaults(command=...)` is overwritten by the subparser's own `None`. This exists because `required=True` made the obvious command print a usage error at someone whose intent was the app's whole purpose: start it, leave it up, press keys. The one-shot verbs are the extra.
 
 **Known, not fixed:** the GUI's Settings → *Credentials…* does not authorise up-front, so on that path the *first* hotkey press still blocks for up to `CONSENT_TIMEOUT` while the browser is open. Doing it inline there would freeze the Settings window's mainloop for the same duration, which is worse; the real fix is a non-blocking consent (thread + a "waiting for Spotify" state), and it needs testing on Windows.
 
@@ -182,10 +182,10 @@ Every `ctk.StringVar` passes an explicit `master=`. A masterless one attaches to
 
 ### Logging
 
-- **One buffer, three front ends.** `applog` is a `logging.Handler` over a bounded deque; `music_agent_cli.py -d` prints it to the console and the tray app's **Settings -> Logs** tab shows it live. What you see in the window is what the CLI would have printed, which is the point — a problem reported from one front end is reproducible in the other.
+- **One buffer, three front ends.** `music_agent.log` is a `logging.Handler` over a bounded deque; `python -m music_agent -d` prints it to the console and the tray app's **Settings -> Logs** tab shows it live. What you see in the window is what the CLI would have printed, which is the point — a problem reported from one front end is reproducible in the other.
 - **Deliberately no file.** A log on disk is a support burden (where, how big, who deletes it) and a privacy question: the lines name the server and the account. It dies with the process. Do not "improve" this by adding a FileHandler without asking.
-- **Readers POLL, they are not called back.** Lines arrive from the keyboard thread and from whatever thread an HTTP call runs on; Tk may only be touched from the thread owning the widget. `applog.since(cursor)` lets the window ask on its own `after()` timer — that is the entire synchronisation story, and a callback straight into the textbox would be a crash waiting for the right timing.
-- **Records are formatted on the thread that logged them**, not when read: a message can name an object whose `repr` changes (or raises) later. `applog.demo()` covers the ring-buffer wrap, the cursor, and an unformattable record.
+- **Readers POLL, they are not called back.** Lines arrive from the keyboard thread and from whatever thread an HTTP call runs on; Tk may only be touched from the thread owning the widget. `log.since(cursor)` lets the window ask on its own `after()` timer — that is the entire synchronisation story, and a callback straight into the textbox would be a crash waiting for the right timing.
+- **Records are formatted on the thread that logged them**, not when read: a message can name an object whose `repr` changes (or raises) later. `log.demo()` covers the ring-buffer wrap, the cursor, and an unformattable record.
 - **`httpmin` logs every call at DEBUG** — method, scheme://host/path, status, bytes, milliseconds — deliberately WITHOUT the query string or any header, because tokens live in both. That log is how a network problem gets diagnosed without a packet capture.
 
 ## Hotkeys

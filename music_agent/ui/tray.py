@@ -11,7 +11,7 @@ Two modes (config.py `mode`, switchable in Settings):
 Everything the app remembers — mode, Cadence URL + session, Cloudflare token, Spotify keys, hotkeys —
 lives in ONE file beside the app: cadence_config.txt (see config.py).
 
-Both modes expose the same five actions (spotify_backend.SpotifyController / cadence.CadenceController),
+Both modes expose the same five actions (spotify.SpotifyController / cadence.CadenceController),
 so everything below — hotkeys, tray, notifications — is mode-agnostic.
 """
 
@@ -26,12 +26,12 @@ import keyboard
 import pystray
 from PIL import Image
 
-import applog
-from cadence import client_from_config
-from config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
+from music_agent import log
+from music_agent.backends.cadence import client_from_config
+from music_agent.config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
                     save_config)
-import login_ui
-from settings_ui import open_settings
+from music_agent.ui import login
+from music_agent.ui.settings import open_settings
 
 # this string is your “AppUserModelID”
 MY_APP_ID = "com.erfffff.musicagent"
@@ -52,9 +52,9 @@ def initialize_logging():
             logging.StreamHandler(sys.stdout),
         ],
     )
-    # The tray app's Logs page reads this buffer — the same one music_agent_cli.py -d prints — so a
-    # problem described from one front end looks identical in the other. In memory only; see applog.
-    applog.install(logging.DEBUG)
+    # The tray app's Logs page reads this buffer — the same one music_agent/cli.py -d prints — so a
+    # problem described from one front end looks identical in the other. In memory only; see log.
+    log.install(logging.DEBUG)
     logging.info("Logging initialized.")
 
 
@@ -135,7 +135,7 @@ def run_setup(cfg):
     chosen mode, or None if the user closed the window."""
     # A .env that pins MODE has already answered this. load_config applies it AFTER the saved config,
     # so asking would put up a window whose answer gets overruled on the next launch.
-    mode = env_config().get("mode") or login_ui.choose_mode(cfg)
+    mode = env_config().get("mode") or login.choose_mode(cfg)
     if mode is None:
         return None
     cfg["mode"] = mode
@@ -143,7 +143,7 @@ def run_setup(cfg):
         save_config(cfg)
     except OSError:
         pass  # a read-only config dir must not stop the app running for this session
-    if mode == "spotify" and not login_ui.spotify_setup(cfg):
+    if mode == "spotify" and not login.spotify_setup(cfg):
         return None
     return mode
 
@@ -159,7 +159,7 @@ def build_controller(cfg, setup=True):
         return None
 
     if cfg["mode"] == "cadence":
-        from cadence import CadenceController
+        from music_agent.backends.cadence import CadenceController
 
         client = client_from_config(cfg)
         if not client.is_authenticated():
@@ -172,12 +172,12 @@ def build_controller(cfg, setup=True):
             # was already signed in.
             if not setup:
                 return None
-            client = login_ui.sign_in(cfg)
+            client = login.sign_in(cfg)
             if client is None:
                 return None
         return CadenceController(client)
 
-    from spotify_backend import SpotifyConfigError, controller_from_config
+    from music_agent.backends.spotify import SpotifyConfigError, controller_from_config
 
     try:
         return controller_from_config(cfg)

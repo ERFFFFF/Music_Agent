@@ -6,7 +6,7 @@ httpmin, this project's stdlib `urllib` shim, so this file costs the project no 
 
 Same shape as cadence.py on purpose: a client whose `_api` turns every failure into one CadenceError-
 style exception carrying the sentence to show the user, and a Controller exposing the same five actions
-main.py and music_agent_cli.py bind hotkeys to. Errors come back as a *message*, never an exception,
+ui/tray.py and cli.py bind hotkeys to. Errors come back as a *message*, never an exception,
 because these run on the hotkey thread where an uncaught exception is a silently dead key.
 
 The refresh token lives in cadence_config.txt with everything else (config.DEFAULTS); the access token
@@ -25,7 +25,7 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import httpmin
+from music_agent.net import httpmin
 
 API = "https://api.spotify.com/v1"
 ACCOUNTS = "https://accounts.spotify.com"
@@ -320,8 +320,8 @@ class SpotifyController:
         return self.device_id
 
     def _act(self, call):
-        """Run one action and return TEXT, never raise. Mirrors CadenceController's `_send`, so main.py
-        and music_agent_cli.py can treat the two backends identically.
+        """Run one action and return TEXT, never raise. Mirrors CadenceController's `_send`, so ui/tray.py
+        and music_agent/cli.py can treat the two backends identically.
 
         The bare `except Exception` is deliberate and is the whole point of this method: these run on
         the keyboard thread, where anything that escapes kills that hotkey silently and permanently.
@@ -427,7 +427,7 @@ def _legacy_refresh_token():
 
     Not part of config._migrate: that only runs when cadence_config.txt is ABSENT, and every install
     since the one-config-file change already has one."""
-    from config import appdata_dir
+    from music_agent.config import appdata_dir
 
     try:
         with open(os.path.join(appdata_dir(), ".cache"), encoding="utf-8") as f:
@@ -438,8 +438,8 @@ def _legacy_refresh_token():
 
 def controller_from_config(cfg):
     """A controller wired to the saved settings, persisting any refreshed token back into the same
-    config file. The one construction path — main.py and music_agent_cli.py both use it."""
-    from config import update_config
+    config file. The one construction path — ui/tray.py and cli.py both use it."""
+    from music_agent.config import update_config
 
     if not cfg.get("spotify_refresh_token"):
         inherited = _legacy_refresh_token()
@@ -487,27 +487,27 @@ def selftest():
     c.auth._access, c.auth._expires_at = "tok", time.time() + 999
 
     # 204 with an empty body is the success case for every playback command — .json() would raise
-    with mock.patch("httpmin.request", return_value=response(204)):
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(204)):
         assert c._api("PUT", "/me/player/pause") == {}
     # ...and so is 200 with an empty body, which is what /me/library save+remove actually answer.
     # Testing the status alone instead of the body is the easiest way to crash this file.
-    with mock.patch("httpmin.request",
+    with mock.patch("music_agent.net.httpmin.request",
                     return_value=response(200, b"", json_value=AssertionError)) as m:
         assert c._api("PUT", "/me/library", params={"uris": "spotify:track:x"}) == {}
         assert m.call_args.kwargs["params"] == {"uris": "spotify:track:x"}, "library takes URIs, not ids"
     # ...and a 200 with a body still parses
-    with mock.patch("httpmin.request", return_value=response(200, b"{}", {"is_playing": True})):
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(200, b"{}", {"is_playing": True})):
         assert c._api("GET", "/me/player") == {"is_playing": True}
 
     # ...and neither does a 200 carrying something that ISN'T JSON. Measured: PUT /me/player/play and
     # /pause answer 200 with an opaque token and no Content-Type. The command SUCCEEDED; treating an
     # unparseable body as a crash reported "Spotify sent something unexpected" at a working pause.
-    with mock.patch("httpmin.request", return_value=_Real(200, b"A3_PtwniwTUebcLjlJgM73TGjkU")):
+    with mock.patch("music_agent.net.httpmin.request", return_value=_Real(200, b"A3_PtwniwTUebcLjlJgM73TGjkU")):
         assert c._api("PUT", "/me/player/pause") == {}
 
     # A 403 is not always Premium. "Restriction violated" is what a skip gets when the current
     # context has nowhere to skip to — telling a Premium subscriber to buy Premium helps nobody.
-    with mock.patch("httpmin.request", return_value=_Real(
+    with mock.patch("music_agent.net.httpmin.request", return_value=_Real(
             403, b'{"error":{"status":403,"message":"Player command failed: Restriction violated"}}')):
         try:
             c._api("POST", "/me/player/next")
@@ -516,7 +516,7 @@ def selftest():
             assert "Restriction violated" in str(e) and "Premium" not in str(e), str(e)
     # ...but a real Premium refusal still says so, and so does a 403 with no usable body
     for body in (b'{"error":{"status":403,"message":"Player command failed: Premium required"}}', b"", b"<html>"):
-        with mock.patch("httpmin.request", return_value=_Real(403, body)):
+        with mock.patch("music_agent.net.httpmin.request", return_value=_Real(403, body)):
             try:
                 c._api("POST", "/me/player/next")
                 raise AssertionError("403 must raise")
@@ -526,7 +526,7 @@ def selftest():
     for status, expected, headers in ((403, "Premium", None), (404, "No active Spotify device", None),
                                       (429, "rate-limiting", {"Retry-After": "7"}),
                                       (500, "Spotify error 500", None)):
-        with mock.patch("httpmin.request", return_value=response(status, headers=headers)):
+        with mock.patch("music_agent.net.httpmin.request", return_value=response(status, headers=headers)):
             try:
                 c._api("GET", "/me/player")
                 raise AssertionError(f"{status} must raise")
@@ -536,17 +536,17 @@ def selftest():
 
     # an action never raises at the caller — it returns the sentence to show, and records that it
     # was a failure so a script can act on it (the text alone is indistinguishable from a track name)
-    with mock.patch("httpmin.request", return_value=response(403)):
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(403)):
         assert "Premium" in c.show_current() and c.last_error
-    with mock.patch("httpmin.request", return_value=response(
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(
             200, b"{}", {"is_playing": True, "item": {"id": "T", "name": "Song", "artists": [{"name": "A"}]}})):
         assert c.show_current() == "Song — A" and c.last_error is None, "a success must clear it"
     # ...and `now` has to say WHICH state it is in — pause and resume print nothing on success, and
     # CadenceController.now_playing_text already marks it, so the two modes must agree.
-    with mock.patch("httpmin.request", return_value=response(
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(
             200, b"{}", {"is_playing": False, "item": {"id": "T", "name": "Song", "artists": []}})):
         assert c.show_current() == "Song —   (paused)", c.show_current()
-    with mock.patch("httpmin.request", return_value=response(200, b"{}", {"devices": []})):
+    with mock.patch("music_agent.net.httpmin.request", return_value=response(200, b"{}", {"devices": []})):
         c.device_id = None
         assert "No Spotify device" in c.next_track() and c.last_error
 
@@ -557,7 +557,7 @@ def selftest():
         if url.endswith("/me/player"):
             return response(200, b"{}", {"item": {"id": "T1", "name": "S", "artists": []}})
         return response(200, b"")            # contains answers 200 with nothing in it
-    with mock.patch("httpmin.request", side_effect=malformed):
+    with mock.patch("music_agent.net.httpmin.request", side_effect=malformed):
         assert isinstance(c.toggle_like(), str), "a malformed response must become a message"
 
     # pause/resume must not write when the player is already in the wanted state: Spotify answers a
@@ -579,7 +579,7 @@ def selftest():
                                        (True, "play_pause", ["/me/player/pause"]),
                                        (False, "play_pause", ["/me/player/play"])):
         writes = []
-        with mock.patch("httpmin.request", side_effect=player(is_playing)):
+        with mock.patch("music_agent.net.httpmin.request", side_effect=player(is_playing)):
             assert getattr(c, call)() is None, (call, is_playing)
         assert [url[len(API):] for _m, url in writes] == expected, (call, is_playing, writes)
 
@@ -590,12 +590,12 @@ def selftest():
     # a refresh that returns a new refresh token must persist it
     saved = []
     auth = _Auth("id", "secret", "http://127.0.0.1:8888/callback", "old", saved.append)
-    with mock.patch("httpmin.post", return_value=response(
+    with mock.patch("music_agent.net.httpmin.post", return_value=response(
             200, b"{}", {"access_token": "a", "expires_in": 3600, "refresh_token": "new"})):
         assert auth.token() == "a"
     assert saved == ["new"] and auth.refresh_token == "new"
     # ...and one that omits it must keep the old one rather than blanking it
-    with mock.patch("httpmin.post", return_value=response(
+    with mock.patch("music_agent.net.httpmin.post", return_value=response(
             200, b"{}", {"access_token": "b", "expires_in": 3600})):
         assert auth.token(force=True) == "b"
     assert auth.refresh_token == "new" and saved == ["new"]
@@ -604,7 +604,7 @@ def selftest():
     # upstream, so the next call re-runs consent instead of failing identically forever
     cleared = []
     dead = _Auth("id", "secret", "http://127.0.0.1:8888/callback", "expired", cleared.append)
-    with mock.patch("httpmin.post", return_value=response(
+    with mock.patch("music_agent.net.httpmin.post", return_value=response(
             400, b"{}", {"error": "invalid_grant", "error_description": "Refresh token revoked"})):
         with mock.patch.object(_Auth, "_authorize", return_value="fresh") as consent:
             assert dead.token() == "fresh"
@@ -614,7 +614,7 @@ def selftest():
     # ...but a plain credentials error must NOT clear anything — retrying is the right move there
     kept = []
     auth3 = _Auth("id", "bad-secret", "http://127.0.0.1:8888/callback", "good", kept.append)
-    with mock.patch("httpmin.post", return_value=response(400, b"{}", {"error": "invalid_client"})):
+    with mock.patch("music_agent.net.httpmin.post", return_value=response(400, b"{}", {"error": "invalid_client"})):
         try:
             auth3.token()
             raise AssertionError("a bad client secret must raise")

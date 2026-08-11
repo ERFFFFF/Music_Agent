@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 from ctypes import wintypes
 
-from httpmin import DEFAULT_TIMEOUT, RequestError, Response, USER_AGENT, shape
+from music_agent.net.httpmin import DEFAULT_TIMEOUT, RequestError, Response, USER_AGENT, shape
 
 # ------------------------------------------------------------------------------------- WinHTTP ABI
 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY = 4      # honours WPAD + PAC, which is half the reason for this
@@ -357,7 +357,7 @@ def selftest():
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
-    import httpmin
+    from music_agent.net import httpmin
 
     if not available():
         print("winhttp self-check skipped (not Windows)")

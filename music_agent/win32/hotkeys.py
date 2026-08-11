@@ -19,7 +19,7 @@ The trade, stated plainly:
 
 ponytail: no key-capture, no suppression, no remapping — the five actions bind a combination and that
 is the whole feature. `keyboard` is still the answer if the GUI ever needs to RECORD a combination
-(settings_ui.py does, and still uses it).
+(settings.py does, and still uses it).
 """
 
 import ctypes

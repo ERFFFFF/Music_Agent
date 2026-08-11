@@ -10,8 +10,8 @@
 #
 #   .\build_portable.ps1     ->  dist\MusicAgent_portable.exe
 #
-# THE CLI IS NOT BUILT, on purpose. music_agent_cli.py has no dependencies to bundle - you run it with
-# `python music_agent_cli.py <verb>` and it is live: edit the file, run it again, that is the whole
+# THE CLI IS NOT BUILT, on purpose. It has no dependencies to bundle - you run it with
+# `python -m music_agent <verb>` and it is live: edit the file, run it again, that is the whole
 # loop. Freezing it would add a 10 MB artifact and a rebuild step between every change, to ship an
 # interpreter the machine already has. Only the tray app earns an exe, because a tray app has to start
 # from a shortcut with no console.
@@ -25,6 +25,9 @@ $ErrorActionPreference = "Stop"
 # that ever uses it: a build tool, not a dependency of the app.
 $PyInstaller = "pyinstaller==6.22.0"
 
+# PyInstaller needs a plain script, not a package entry point, and it must be able to import
+# `music_agent` -- so the entry script sits at the project root next to the package.
+
 python -m pip install -r requirements-gui.txt $PyInstaller
 # --onefile: everything in one file. --noconsole: it's a tray app, a console window would just sit
 # there. The icon is added as data too, because find_icon() looks for it beside the exe AND in _MEIPASS.
@@ -34,8 +37,8 @@ pyinstaller `
     --name "MusicAgent_portable" `
     --icon "poulet.ico" `
     --add-data "poulet.ico;." `
-    main.py
+    tray_entry.py
 
 Write-Host ""
 Write-Host "Built dist\MusicAgent_portable.exe - copy it anywhere and run it." -ForegroundColor Green
-Write-Host "The CLI is not built: run 'python music_agent_cli.py status' from the source folder." -ForegroundColor DarkGray
+Write-Host "The CLI is not built: run 'python -m music_agent status' from the source folder." -ForegroundColor DarkGray

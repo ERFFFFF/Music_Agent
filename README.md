@@ -103,7 +103,7 @@ fields empty.
 hotkey pressed in that window says "Cadence is waking up — try again in a few seconds". (If it was
 asleep, no browser tab was open either, so there was nothing to control regardless.)
 
-## ⌨️ No-GUI mode (`music_agent_cli.py`)
+## ⌨️ No-GUI mode (`music_agent/cli.py`)
 
 Everything the Settings window does, from a terminal — same `cadence_config.txt`, same two modes, same
 actions. There is no separate configuration to keep in sync: the tray app and the CLI read and write
@@ -113,7 +113,7 @@ the one file.
 what this program *is*, and nothing needs installing first:
 
 ```powershell
-python music_agent_cli.py
+python -m music_agent
 ```
 
 ```text
@@ -146,24 +146,24 @@ one-shot commands for scripting, or for finding out why something isn't working.
 and exits, so they are **not** a substitute for leaving the agent running:
 
 ```powershell
-python music_agent_cli.py status      # what's configured, and where each value came from
-python music_agent_cli.py now         # what's playing
-python music_agent_cli.py play        # ...and pause / toggle / next / prev / like
-python music_agent_cli.py devices     # Spotify Connect devices this account can see
-python music_agent_cli.py login       # sign in — normally automatic, from the .env
-python music_agent_cli.py hotkeys                          # list them, and where each came from
-python music_agent_cli.py hotkeys play_pause ctrl+alt+p    # rebind one
-python music_agent_cli.py hotkeys reset
-python music_agent_cli.py run         # the agent again, spelled out — same as no arguments
-python music_agent_cli.py -v          # ...and -v works on anything, agent included
+python -m music_agent status      # what's configured, and where each value came from
+python -m music_agent now         # what's playing
+python -m music_agent play        # ...and pause / toggle / next / prev / like
+python -m music_agent devices     # Spotify Connect devices this account can see
+python -m music_agent login       # sign in — normally automatic, from the .env
+python -m music_agent hotkeys                          # list them, and where each came from
+python -m music_agent hotkeys play_pause ctrl+alt+p    # rebind one
+python -m music_agent hotkeys reset
+python -m music_agent run         # the agent again, spelled out — same as no arguments
+python -m music_agent -v          # ...and -v works on anything, agent included
 ```
 
-The working directory doesn't matter — `python D:\path\to\music_agent_cli.py` finds its `.env` and its
+The working directory doesn't matter — `python D:\path\to\music_agent/cli.py` finds its `.env` and its
 config next to the script, not next to you.
 
 **`play` and `pause` mean what they say**, in both modes: each reads the current state first, so
 running one twice is a no-op rather than the opposite action. `toggle` is the flip, and it's what the
-hotkey binds. **Exit code 1 on failure**, so `music_agent_cli.py play || alert-me` works — the message
+hotkey binds. **Exit code 1 on failure**, so `music_agent/cli.py play || alert-me` works — the message
 goes to stderr, everything else to stdout.
 
 ### Credentials live in `.env`, and only there
@@ -191,8 +191,8 @@ HOTKEY_SHOW_CURRENT=ctrl+alt+c
 ### Seeing what it's doing
 
 ```powershell
-python music_agent_cli.py -d          # the agent, streaming every HTTP call, status and timing
-python music_agent_cli.py -d now      # ...or on any one-shot command
+python -m music_agent -d          # the agent, streaming every HTTP call, status and timing
+python -m music_agent -d now      # ...or on any one-shot command
 ```
 
 The tray app shows the same log on **Settings → Logs**, live, with the history from before you
@@ -234,7 +234,7 @@ PROXY_AUTH=current-user
 
 Most corporate proxies answer 407 with `NTLM` or `Negotiate` rather than `Basic`. `urllib` speaks
 only Basic — measured against proxies demanding each, it never attempts them — so this switches the
-transport to **Windows' own HTTP stack** (`winhttp.py`, ctypes, no package), which does the SSPI
+transport to **Windows' own HTTP stack** (`net/winhttp.py`, ctypes, no package), which does the SSPI
 handshake as the logged-in user and reads PAC files too. Leave it empty and nothing changes: the
 default transport stays in use.
 
@@ -299,15 +299,15 @@ pip install -r requirements-cli.txt    # empty — the CLI runs on the standard 
 pip install -r requirements-gui.txt    # customtkinter + pystray + Pillow + keyboard, for the tray app
 ```
 
-`music_agent_cli.py` reaches no third-party package at all. The two it used to need were replaced with
+`music_agent/cli.py` reaches no third-party package at all. The two it used to need were replaced with
 the thing they were wrapping:
 
 | Was | Now | Why |
 |-----|-----|-----|
-| `requests` | [`httpmin.py`](httpmin.py) | ~140 lines of `urllib.request` in a `requests` shape. Both backends make small JSON calls and nothing else. |
-| `keyboard` | [`winhotkeys.py`](winhotkeys.py) | Win32 `RegisterHotKey` + a message loop, which *is* the OS's global-hotkey mechanism — no low-level keyboard hook, so no administrator rights. |
+| `requests` | [`net/httpmin.py`](httpmin.py) | ~140 lines of `urllib.request` in a `requests` shape. Both backends make small JSON calls and nothing else. |
+| `keyboard` | [`win32/hotkeys.py`](win32/hotkeys.py) | Win32 `RegisterHotKey` + a message loop, which *is* the OS's global-hotkey mechanism — no low-level keyboard hook, so no administrator rights. |
 
-The tray app still needs `keyboard`, because `settings_ui.py` **records** a combination as you press
+The tray app still needs `keyboard`, because `ui/settings.py` **records** a combination as you press
 it, and that is the one thing `RegisterHotKey` cannot do.
 
 ### Building the portable exe
@@ -318,7 +318,7 @@ it, and that is the one thing `RegisterHotKey` cannot do.
 
 **The CLI is not built into an exe, on purpose.** It has no dependencies to bundle, so freezing it
 would only add a 10 MB artifact and a rebuild step between every change, to ship an interpreter you
-already have. Run it live — `python music_agent_cli.py <verb>`, edit, run again. Only the tray app
+already have. Run it live — `python -m music_agent <verb>`, edit, run again. Only the tray app
 earns an exe, because it has to start from a shortcut with no console.
 
 ## 🔗 Useful Links
@@ -363,7 +363,7 @@ pip install -r requirements-gui.txt    # only if you're working on the tray app
 
 ### 2. Configure
 
-Copy `.env.example` to `.env` next to `main.py` and fill in your server, account and keys — that file
+Copy `.env.example` to `.env` next to `ui/tray.py` and fill in your server, account and keys — that file
 is the source of truth for every credential, is read on every run, and is never written to. It is
 gitignored and must never be committed.
 
@@ -372,19 +372,19 @@ session cookie and the Spotify refresh token. Delete it to start clean; your `.e
 `config.json` / `cadence_session.json` are read once and migrated into it, so an existing install keeps
 its settings.
 
-You can skip the `.env` entirely and run `python music_agent_cli.py setup` (or just launch the tray
+You can skip the `.env` entirely and run `python -m music_agent setup` (or just launch the tray
 app) to be asked instead — the answers go into `cadence_config.txt`, encrypted with DPAPI.
 
 Self-checks:
 
 ```bash
-python selftest.py   # everything below, plus the cross-module checks. Run this one.
+python -m music_agent.selftest   # everything below, plus the cross-module checks. Run this one.
 
-python httpmin.py    # the HTTP shim, against a real loopback server
-python config.py     # config paths, round-trip, .env precedence, corrupt-file fallback
-python cadence.py    # cookie handling + "is this a wall or an answer?" detection
-python winhotkeys.py # combination parsing + real RegisterHotKey clash/cleanup (Windows only)
-python cadence.py https://your-cadence user password    # ...plus a live round trip
+python -m music_agent.net.httpmin    # the HTTP shim, against a real loopback server
+python -m music_agent.config     # config paths, round-trip, .env precedence, corrupt-file fallback
+python -m music_agent.backends.cadence    # cookie handling + "is this a wall or an answer?" detection
+python -m music_agent.win32.hotkeys # combination parsing + real RegisterHotKey clash/cleanup (Windows only)
+python -m music_agent.backends.cadence https://your-cadence user password    # ...plus a live round trip
 ```
 
 ### 3. Build the Executable
@@ -396,7 +396,7 @@ Builds the exe from scratch, creates a shortcut in the Windows Startup folder so
 Run in PowerShell inside the repository folder :
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"; pyinstaller --noconsole --icon=poulet.ico --name "Music Agent" main.py; $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"); $sc.TargetPath = (Resolve-Path ".\dist\Music Agent\Music Agent.exe").Path; $sc.WorkingDirectory = (Resolve-Path ".\dist\Music Agent").Path; $sc.Save(); New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, tray_entry.spec, "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"; pyinstaller --noconsole --icon=poulet.ico --name "Music Agent" tray_entry.py; $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Music Agent.lnk"); $sc.TargetPath = (Resolve-Path ".\dist\Music Agent\Music Agent.exe").Path; $sc.WorkingDirectory = (Resolve-Path ".\dist\Music Agent").Path; $sc.Save(); New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
 #### Quick rebuild (using the spec file)
@@ -412,7 +412,7 @@ The output is at `dist\Music Agent\Music Agent.exe`. The Startup shortcut still 
 #### Build only (without startup shortcut)
 
 ```powershell
-Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, main.spec; pyinstaller --noconsole --icon=poulet.ico --name "Music Agent" main.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist, build, tray_entry.spec; pyinstaller --noconsole --icon=poulet.ico --name "Music Agent" tray_entry.py; New-Item -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Force | Out-Null; Set-ItemProperty -Path "HKCU:\Software\Classes\AppUserModelIDs\com.erfffff.musicagent" -Name "(Default)" -Value "Music Agent"
 ```
 
 ### 4. Build the Installer
