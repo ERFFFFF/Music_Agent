@@ -204,10 +204,27 @@ Set `HTTP_PROXY` / `HTTPS_PROXY` separately if they must differ. Anything set he
 already in your shell. `status` shows which proxy is in effect and where it came from, with any
 password printed as `***`.
 
-Windows proxy *settings* are picked up automatically, so often you need nothing. Two gaps worth
-knowing: a **PAC file** (Automatic configuration script) is not read — open it, find the proxy for
-your host, and put it in `.env` — and proxies requiring **NTLM/Kerberos** are not supported, only
-Basic.
+Windows proxy *settings* are picked up automatically, so often you need nothing. A **PAC file**
+(Automatic configuration script) is not read by the default transport — see below.
+
+#### Proxy asks for your Windows login (NTLM / Kerberos)
+
+```ini
+PROXY_AUTH=current-user
+```
+
+Most corporate proxies answer 407 with `NTLM` or `Negotiate` rather than `Basic`. `urllib` speaks
+only Basic — measured against proxies demanding each, it never attempts them — so this switches the
+transport to **Windows' own HTTP stack** (`winhttp.py`, ctypes, no package), which does the SSPI
+handshake as the logged-in user and reads PAC files too. Leave it empty and nothing changes: the
+default transport stays in use.
+
+> **Windows 10 cannot do TLS 1.3.** Its TLS stack stops at 1.2, so if your server *requires* TLS 1.3
+> — Cloudflare → SSL/TLS → Edge Certificates → Minimum TLS Version — then nothing built on the
+> Windows stack can reach it, including `curl` and PowerShell. This is measured, not theoretical: it
+> is exactly what this project's own server does. Either set that minimum to 1.2, or leave
+> `PROXY_AUTH` empty. Windows 11 is unaffected. The app says so in as many words rather than
+> reporting a TLS error code.
 
 **One rule covers all of it: what the `.env` supplies, the `.env` keeps.** The config file stores that
 field's *default* instead, so there is never a second copy to rotate, and deleting a line returns the

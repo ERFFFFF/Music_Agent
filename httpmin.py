@@ -29,6 +29,7 @@ What the two backends actually rely on, and therefore what is load-bearing here:
 Importable everywhere (pure stdlib), so cadence.py's self-check still runs off Windows.
 """
 
+import http.client
 import http.cookiejar
 import json as _json
 import urllib.error
@@ -101,6 +102,31 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+_transport = None
+
+
+def use_windows_transport(enabled):
+    """Send every request through winhttp.py instead of urllib, or stop doing so. Returns whether it
+    is now in effect.
+
+    The one thing urllib cannot do is authenticate to a proxy as the logged-in Windows user (it
+    speaks Basic only, and a corporate proxy wants NTLM or Negotiate). Switching the whole transport
+    is a bigger hammer than swapping one handler, but proxy auth happens during the CONNECT that
+    establishes the tunnel — whoever opens the tunnel has to be the one that authenticates, so there
+    is no smaller seam. One branch here covers both backends and both front ends.
+    """
+    global _transport
+    _transport = None
+    if not enabled:
+        return False
+    import winhttp            # local: winhttp imports FROM this module, so a top-level import cycles
+
+    if not winhttp.available():
+        return False
+    _transport = winhttp.request
+    return True
+
+
 def request(method, url, *, params=None, json=None, data=None, headers=None,
             timeout=DEFAULT_TIMEOUT, cookies=None):
     """One request, one Response. `json=` sends a JSON body, `data=` a form-encoded one.
@@ -108,6 +134,9 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
     `params` goes through `urlencode`, which percent-encodes the colons in `spotify:track:<id>` —
     the form Spotify's /me/library documents.
     """
+    if _transport is not None:
+        return _transport(method, url, params=params, json=json, data=data, headers=headers,
+                          timeout=timeout, cookies=cookies)
     if params:
         joiner = "&" if urllib.parse.urlsplit(url).query else "?"
         url += joiner + urllib.parse.urlencode(params)
@@ -140,7 +169,12 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
         finally:
             e.close()
         return Response(e.code, content, e.headers, e.url, redirects.history)
-    except (urllib.error.URLError, OSError) as e:
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+        # HTTPException covers the connection dying MID-RESPONSE — IncompleteRead when a proxy or a
+        # load balancer drops the tail, BadStatusLine when it closes a kept-alive socket at the wrong
+        # moment. Measured against a proxy that truncated a reply: without this it escapes as a raw
+        # http.client.IncompleteRead, straight past cadence._request's error mapping, and reaches the
+        # user as a traceback-shaped string instead of "Can't reach Cadence at ...".
         raise RequestError(getattr(e, "reason", None) or e) from e
 
 
@@ -169,7 +203,10 @@ def selftest():
     """The four behaviours the backends actually depend on, against a real loopback server: an error
     status arriving as data, an empty body staying empty, the redirect chain surviving, and a
     server-issued cookie replacing a restored one."""
+    import socket
     import threading
+
+    CRLF = bytes([13, 10])
     from http.server import BaseHTTPRequestHandler, HTTPServer
 
     class H(BaseHTTPRequestHandler):
@@ -265,6 +302,28 @@ def selftest():
             raise AssertionError("a dead port must raise")
         except RequestError:
             pass
+
+        # ...and so is a connection that dies MID-response. A proxy or load balancer that drops the
+        # tail raises http.client.IncompleteRead, which is not an OSError and would otherwise sail
+        # past every caller's error handling. Measured against a real truncating proxy.
+        liar = socket.socket()
+        liar.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        liar.bind(("127.0.0.1", 0))
+        liar.listen(1)
+
+        def truncate():
+            conn, _ = liar.accept()
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK" + CRLF + b"Content-Length: 100" + CRLF * 2 + b"only-ten-b")
+            conn.close()
+        threading.Thread(target=truncate, daemon=True).start()
+        try:
+            request("GET", f"http://127.0.0.1:{liar.getsockname()[1]}/short", timeout=5)
+            raise AssertionError("a truncated response must raise")
+        except RequestError:
+            pass
+        finally:
+            liar.close()
     finally:
         server.shutdown()
     print("httpmin self-check ok")

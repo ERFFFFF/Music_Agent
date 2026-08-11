@@ -135,6 +135,11 @@ ENV_FIELDS = {
 # `getaddrinfo failed` (WSA 11001) rather than a timeout, and why it looks like broken DNS.
 ENV_PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
 
+# What `PROXY_AUTH` may say to mean "use the logged-in Windows account". Several spellings because
+# this is typed by hand into a file, once, on a machine where the thing it enables is the difference
+# between the app working and not.
+PROXY_AUTH_CURRENT_USER = ("current-user", "currentuser", "windows", "sspi", "negotiate", "ntlm")
+
 
 def apply_env_proxy():
     """Export the `.env`'s proxy settings into the environment, where urllib will find them.
@@ -156,6 +161,22 @@ def apply_env_proxy():
         if value:
             os.environ[key] = value
             applied[key] = value
+
+    # PROXY_AUTH=current-user means "authenticate to the proxy as whoever is logged in", i.e. NTLM or
+    # Negotiate over SSPI. urllib cannot do that at all — measured against proxies demanding each, it
+    # never attempts them and just surfaces the 407 — so this switches the transport to Windows' own
+    # HTTP stack, which does it (and reads a PAC file, which urllib also cannot).
+    #
+    # Imported here rather than at the top so config.py stays the module with no app dependencies,
+    # and so a machine that never asks for this never loads either transport module.
+    import httpmin
+
+    wanted = raw.get("PROXY_AUTH", "").strip().lower().replace("_", "-") in PROXY_AUTH_CURRENT_USER
+    # Always called, including with False: the default transport has to be restored if the setting is
+    # removed, or a process that once saw it would keep the other one for its whole life.
+    in_effect = httpmin.use_windows_transport(wanted)
+    if wanted:
+        applied["PROXY_AUTH"] = "current-user" if in_effect else "current-user (UNAVAILABLE: not Windows)"
     return applied
 
 
