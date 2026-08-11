@@ -25,6 +25,8 @@ gui = [
     "Pillow==12.3.0",
     "keyboard==0.13.5",
 ]
+# Test runner only. Never imported by the app -- the runtime dependency list above stays empty.
+dev = ["pytest>=8"]
 
 [project.scripts]
 music-agent = "music_agent.cli:main"
@@ -37,7 +39,16 @@ music-agent-tray = "music_agent.ui.tray:main"
 Homepage = "https://github.com/ERFFFFF/Music_Agent"
 
 [tool.setuptools.packages.find]
-include = ["music_agent*"]
+where = ["src"]                # src layout: the package is importable only once installed, which is
+                               # the point -- a test run cannot accidentally pick up the source tree
+                               # instead of the thing that was built.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `-q` because these are assert-based checks, not a report to read line by line.
+addopts = "-q"
+
+
 
 [tool.ruff]
 line-length = 108              # the width this codebase is already written and commented at

@@ -1,3 +1,20 @@
+Metadata-Version: 2.4
+Name: music-agent
+Version: 4.1.0
+Summary: Global hotkeys for whatever is playing your music - a Cadence account, or Spotify Connect
+Author: ERFFFFF
+License: MIT
+Project-URL: Homepage, https://github.com/ERFFFFF/Music_Agent
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Provides-Extra: gui
+Requires-Dist: customtkinter==6.0.0; extra == "gui"
+Requires-Dist: pystray==0.19.5; extra == "gui"
+Requires-Dist: Pillow==12.3.0; extra == "gui"
+Requires-Dist: keyboard==0.13.5; extra == "gui"
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+
 
 # Tags
 
@@ -357,8 +374,8 @@ The device is auto-discovered at startup — the agent picks the first available
 ### 1. Install Required Packages
 
 ```bash
-pip install -e ".[dev]"                # editable install + pytest; gives you `music-agent` too
-pip install -e ".[gui]"                # ...add the tray app's toolkit if you're working on the UI
+pip install -r requirements-cli.txt    # nothing — the CLI is stdlib-only
+pip install -r requirements-gui.txt    # only if you're working on the tray app
 ```
 
 ### 2. Configure
@@ -378,13 +395,13 @@ app) to be asked instead — the answers go into `cadence_config.txt`, encrypted
 Self-checks:
 
 ```bash
-python -m pytest   # everything below, plus the cross-module checks. Run this one.
+python -m music_agent.selftest   # everything below, plus the cross-module checks. Run this one.
 
-python -m pytest tests/test_httpmin.py    # the HTTP shim, against a real loopback server
-python -m pytest tests/test_config.py     # config paths, round-trip, .env precedence, corrupt-file fallback
-python -m pytest tests/test_cadence.py    # cookie handling + "is this a wall or an answer?" detection
-python -m pytest tests/test_hotkeys.py # combination parsing + real RegisterHotKey clash/cleanup (Windows only)
-python -m music_agent now    # ...plus a live round trip
+python -m music_agent.net.httpmin    # the HTTP shim, against a real loopback server
+python -m music_agent.config     # config paths, round-trip, .env precedence, corrupt-file fallback
+python -m music_agent.backends.cadence    # cookie handling + "is this a wall or an answer?" detection
+python -m music_agent.win32.hotkeys # combination parsing + real RegisterHotKey clash/cleanup (Windows only)
+python -m music_agent.backends.cadence https://your-cadence user password    # ...plus a live round trip
 ```
 
 ### 3. Build the Executable

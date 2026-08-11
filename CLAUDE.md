@@ -19,13 +19,13 @@ edit never triggers the chooser.
 
 ## Cadence mode specifics
 
-- **`backends/cadence.py`** is the whole mode: `CadenceClient` (HTTP + session persistence) and `CadenceController` (the five hotkey actions). Pure `requests`, no Windows API, so it can be exercised on any OS: `python -m music_agent.backends.cadence <url> <user> <pass>` runs a live self-check.
+- **`backends/cadence.py`** is the whole mode: `CadenceClient` (HTTP + session persistence) and `CadenceController` (the five hotkey actions). Pure `requests`, no Windows API, so it can be exercised on any OS: `python -m music_agent now` runs a live self-check.
 - **URL convention — the one that bites**: Cadence's public host is its Next UI, which rewrites `/api/:path*` to the backend root, stripping exactly ONE `/api`. So a backend route that is already `/api/...` needs it twice from outside (`/api/api/me`) and an unprefixed one needs it once (`/api/login`). `_request()` prepends `/api` to the backend's own path; don't "fix" it.
 - **Login sends an `Origin` header.** Cadence's `/login` rejects a request carrying neither Origin nor Referer (login-CSRF guard). A native client has to state its origin; this is not a bypass.
 - **Two files, and only one holds secrets**: `.env` beside the app is every credential (server, account, Cloudflare token, Spotify keys) plus the `HOTKEY_*` shortcuts — see `config.ENV_FIELDS` / `ENV_HOTKEYS` — read on every load and **never written to**. `cadence_config.txt` (JSON, same folder) holds what the app EARNS or the user picks: **session token**, refresh token, mode, and the hotkeys the `.env` doesn't name. See *What survives what* below before touching either. `config.app_dir()` = exe folder (frozen) or source folder (dev); AppData only when that is read-only. Written 0600; the session token in it IS a credential.
-- **Credentials are encrypted at rest with Windows DPAPI** (`config.SECRET_FIELDS`, `enc:<base64>` values): URL, session, Cloudflare and Spotify keys. `mode` and `hotkeys` stay plaintext so a copied config still looks sane and keeps its shortcuts. `CryptProtectData` keys the blob to the **Windows account**, so the trade-off is deliberate: no launch password and no key inside the exe, at the cost of secrets not surviving a move to another PC/user — `_decrypt` returns `""` there, `is_configured()` reads that as "not signed in", and the user signs in once. `load_config` re-encrypts a plaintext file on sight, so an upgraded install doesn't leave its old token lying around. `python -m music_agent.config` covers all of it.
+- **Credentials are encrypted at rest with Windows DPAPI** (`config.SECRET_FIELDS`, `enc:<base64>` values): URL, session, Cloudflare and Spotify keys. `mode` and `hotkeys` stay plaintext so a copied config still looks sane and keeps its shortcuts. `CryptProtectData` keys the blob to the **Windows account**, so the trade-off is deliberate: no launch password and no key inside the exe, at the cost of secrets not surviving a move to another PC/user — `_decrypt` returns `""` there, `is_configured()` reads that as "not signed in", and the user signs in once. `load_config` re-encrypts a plaintext file on sight, so an upgraded install doesn't leave its old token lying around. `python -m pytest tests/test_config.py` covers all of it.
 - **Session, not password**: the signed cookie round-trips through the config (`CadenceClient(session=…, on_session=…)`, wired by `backends.cadence.client_from_config`). The password is never stored. **Starlette only re-issues the cookie when the session is MODIFIED** (verified in 1.3.1's source; an authenticated GET returns no Set-Cookie) — so Cadence's `_touch_session` marks it modified on `/api/remote/command|state`, which is what makes the agent's saved session slide instead of dying 7 days after login. Not done on `/api/remote/pending` (the browser's 1/s poll).
-- **Cookie domain is load-bearing**: `_load_cookie` sets the restored cookie WITH the host domain. Without it the jar ends up with two entries named `session` (restored under domain "", server-issued under the host) and `cookies.get()` raises `CookieConflictError` — every hotkey dead on the second launch. `_cookie()` also reads defensively. `python -m music_agent.backends.cadence` runs the offline self-check that covers this.
+- **Cookie domain is load-bearing**: `_load_cookie` sets the restored cookie WITH the host domain. Without it the jar ends up with two entries named `session` (restored under domain "", server-issued under the host) and `cookies.get()` raises `CookieConflictError` — every hotkey dead on the second launch. `_cookie()` also reads defensively. `python -m pytest tests/test_cadence.py` runs the offline self-check that covers this.
 - **`live` in the response is load-bearing**: it means a tab drained recently. False → the command will expire unperformed, and the agent says "No Cadence tab is open" instead of faking success.
 - **The server's pending queue drops the occasional command under burst — not ours to fix.** Measured 2026-08-11 against a stand-in tab polling `/api/remote/pending` at 0.8s: commands submitted **faster than the tab polls** are occasionally lost server-side (2 lost out of ~20 burst commands across two runs; one run sent 6 in 1.2s and 5 arrived). Commands spaced ≥1.2s apart arrived 100% of the time, over dozens of tries. `command()` returns `live=True` for the lost ones — the server accepted them, so nothing here can detect it. This is Cadence's queue, in the other repo, and it is invisible to real hotkey use (nobody presses 6 keys in 1.2s meaningfully). **Do not add a retry or an ack to compensate**: a retried playback intent is a *double* skip when the first one did land, which is worse than the drop.
 - **Cloudflare Access**: when the Cadence host sits behind it, no native app can do the interactive login — a **service token** (`CF-Access-Client-Id/Secret`) is the headless path. It's entered via `ui.login.cloudflare_dialog()`, reached from the **⚙ in the sign-in window's top-right corner** and from the Settings account row (one dialog, two entry points, so the token is reachable before AND after signing in). Values are held in StringVars the dialog writes on Save; `CadenceClient` reads them at construction, so a change applies to the next client build. Access answers a token-less request with a **302 to `*.cloudflareaccess.com`**, which the HTTP client FOLLOWS into a 200 full of HTML; `_blocked_by_access()` checks the `www-authenticate: Cloudflare-Access` header *and* the redirect chain, because otherwise a hard block looks like an empty response.
@@ -83,28 +83,31 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 ## Project Structure
 
 ```
-pyproject.toml          # metadata, the (empty) dependency list, and the console entry points
-tray_entry.py           # PyInstaller's entry script for the tray app -- a plain file, not a -m path
+pyproject.toml          # metadata, the (empty) dependency list, entry points, pytest + ruff config
+tray_entry.py           # PyInstaller's entry script -- it needs a file, not a `-m` module path
 .env                    # (gitignored) EVERY credential + MODE + HOTKEY_* + proxy. Never written to.
 .env.example            # ...documented, key by key
 cadence_config.txt      # (generated, gitignored) session cookie + refresh token + what the .env omits
-music_agent/            # THE PACKAGE. Imports only ever point downwards through these layers:
-  __main__.py           #   `python -m music_agent`     -> cli.main()
-  cli.py                #   the CLI, and with no args the hotkey agent. No third-party imports.
+src/music_agent/        # THE PACKAGE (src layout: only an installed copy is importable, so a test
+  __main__.py           #   run cannot silently pick up the source tree instead of the built thing)
+  cli.py                #   `python -m music_agent` -- the CLI, and with no args the hotkey agent
   config.py             #   the .env, cadence_config.txt, DPAPI, the proxy. Depends on net/ only.
   log.py                #   the in-memory ring buffer every front end displays. No file, ever.
-  selftest.py           #   `python -m music_agent.selftest` -- runs every check below plus its own
   net/                  #   httpmin.py (urllib, default) + winhttp.py (Windows stack, proxy SSPI)
   backends/             #   cadence.py + spotify.py -- one controller each, identical contract
   win32/                #   hotkeys.py -- RegisterHotKey. Windows-only, imported lazily.
-  ui/                   #   THE ONLY PART WITH DEPENDENCIES. tray.py, settings.py, login.py
-    __main__.py         #   `python -m music_agent.ui`  -> tray.main()
+  ui/                   #   THE ONLY PART WITH DEPENDENCIES. `python -m music_agent.ui`
+tests/                  # pytest. One test_<module>.py per module + test_integration.py for the rest.
 requirements-cli.txt    # empty, and that is the point
 requirements-gui.txt    # customtkinter + pystray + Pillow + keyboard, for ui/ alone
 build_portable.ps1      # dist\MusicAgent_portable.exe -- the TRAY app only
 poulet.ico              # App icon for exe and installer
 installer/              # Installer files (Inno Setup script, build script, info text)
 ```
+
+Imports only ever point downwards through those layers, and nothing in the package imports `tests/`.
+**Run the checks with `python -m pytest`** — the per-module `selftest()` functions moved into `tests/`
+when the package moved under `src/`, so the app no longer ships its own test code.
 
 **The GUI/CLI split is load-bearing.** `music_agent/cli.py`'s import graph must never reach
 `customtkinter`, `pystray`, `PIL` or `keyboard` — that is what makes `requirements-cli.txt` empty.
@@ -117,7 +120,7 @@ is imported INSIDE `cmd_run`, not at module top, because it is the only Windows-
 graph and every other command runs anywhere. To check after a change:
 
 ```bash
-python -m music_agent.selftest    # every module's self-check plus the cross-module ones
+python -m pytest    # every check: per-module and cross-module
 ```
 
 ## Key Architecture Decisions
@@ -168,13 +171,13 @@ Browser consent runs on the **calling thread, which is the hotkey thread**. Ever
 
 ### Config writes
 
-**Any new credential field must be added to `SECRET_FIELDS`**, or it sits in plaintext next to six encrypted siblings. `spotify_refresh_token` is in it for exactly that reason. `selftest.py` asserts the coverage against a named list, so adding a credential to `DEFAULTS` and forgetting to seal it fails the check rather than shipping.
+**Any new credential field must be added to `SECRET_FIELDS`**, or it sits in plaintext next to six encrypted siblings. `spotify_refresh_token` is in it for exactly that reason. `tests/test_integration.py` asserts the coverage against a named list, so adding a credential to `DEFAULTS` and forgetting to seal it fails the check rather than shipping.
 
 `update_config` composes with DPAPI for free: `load_config` decrypts, `save_config` encrypts, so the dict callers hold is always plaintext and the file is always sealed.
 
 **Long-lived objects must persist through `config.update_config(key, value, cfg)`, never `save_config(cfg)`.** A `CadenceClient` re-saves its sliding cookie and a Spotify `_Auth` rotates its refresh token minutes or hours after being constructed; writing their captured dict reverted whatever Settings saved in between. Measured: one cookie rotation put an old hotkey back on disk. `update_config` re-reads, sets one field, writes. It deliberately does **not** resurrect unsaved in-memory edits — every caller saves before signing in.
 
-`selftest.py` pins this (`a credential write never reverts a settings save`).
+`tests/test_integration.py::test_credential_write_does_not_clobber` pins this.
 
 ### tkinter variables
 

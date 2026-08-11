@@ -27,7 +27,7 @@ import pystray
 from PIL import Image
 
 from music_agent import log
-from music_agent.backends.cadence import client_from_config
+from music_agent.backends.cadence import CadenceError, client_from_config
 from music_agent.config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
                     save_config)
 from music_agent.ui import login
@@ -35,7 +35,6 @@ from music_agent.ui.settings import open_settings
 
 # this string is your “AppUserModelID”
 MY_APP_ID = "com.erfffff.musicagent"
-ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(MY_APP_ID)
 
 
 def initialize_logging():
@@ -52,13 +51,17 @@ def initialize_logging():
             logging.StreamHandler(sys.stdout),
         ],
     )
+    # Third-party libraries log at DEBUG too, and Pillow alone emits ~50 lines listing every image
+    # plugin it can find. Since the Logs page exists to show what THIS app is doing, they are pinned
+    # at WARNING -- their problems still surface, their bookkeeping does not.
+    for noisy in ("PIL", "comtypes", "asyncio", "urllib3", "matplotlib"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     # The tray app's Logs page reads this buffer — the same one music_agent/cli.py -d prints — so a
     # problem described from one front end looks identical in the other. In memory only; see log.
     log.install(logging.DEBUG)
     logging.info("Logging initialized.")
 
 
-initialize_logging()
 
 # Single-instance enforcement
 MUTEX_NAME = "Global\\MusicAgentMutex"
@@ -79,7 +82,6 @@ def create_single_instance():
     logging.info("Instance lock acquired.")
 
 
-create_single_instance()
 
 
 # Windows balloon notification
@@ -125,7 +127,7 @@ def notify(message, title="Music Agent"):
 
 
 # --------------------------------------------------------------------------- the controller (= the mode)
-app_config = load_config()
+app_config = None
 controller = None
 tray_icon = None
 
@@ -166,6 +168,18 @@ def build_controller(cfg, setup=True):
             # No session, or it expired/was revoked: this is the "login part" on launch. It appears
             # once per machine — Cadence re-signs the cookie on every call, so it stays valid.
             #
+            # But not if the .env already holds the account. The CLI signs itself in from it, and a
+            # tray app that puts a password box in front of someone who wrote their password into a
+            # file specifically to avoid that is the .env not keeping its promise. Measured on the
+            # portable build: a fully-configured .env still opened the sign-in window.
+            if cfg.get("cadence_username") and cfg.get("cadence_password"):
+                try:
+                    client.login(cfg["cadence_username"], cfg["cadence_password"])
+                    return CadenceController(client)
+                except CadenceError as e:
+                    # Fall through to the window rather than dying: a typo in the .env, a sleeping
+                    # server and a revoked account all land here, and the window can fix all three.
+                    logging.warning("Sign-in from the .env failed (%s) — asking instead.", e)
             # Gated on `setup` as well, because is_authenticated() is a live request that also returns
             # False for a sleeping or unreachable server. Without the gate, saving a hotkey while the
             # Cadence stack was scaled to zero threw a full username/password window at someone who
@@ -231,7 +245,7 @@ def reload_config():
     global app_config, controller
     keyboard.unhook_all_hotkeys()
     previous = app_config
-    app_config = load_config()
+    app_config = None
     setup_hotkeys()
     # The credential fields are in here too: signing in (or out) from Settings has to reach the LIVE
     # controller, which otherwise keeps using the old client — a revoked session kept reporting
@@ -275,8 +289,27 @@ def create_tray_icon():
     return icon
 
 
+def start():
+    """The side effects that used to run at IMPORT time: the app id, the log, the single-instance
+    mutex, and reading the config.
+
+    Importing a module must not reconfigure logging and must certainly not `sys.exit()` — which is
+    what `create_single_instance()` did at module level, so `import music_agent.ui.tray` killed the
+    interpreter whenever another copy was running. Everything that changes global state now happens
+    when someone actually starts the app.
+    """
+    global app_config
+
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(MY_APP_ID)
+    initialize_logging()
+    create_single_instance()
+    app_config = load_config()
+
+
 def main():
     global controller, tray_icon
+
+    start()
     # build_controller mutates app_config in place when setup changes the mode, so the tray title
     # below already reads the chosen one — no re-read needed.
     controller = build_controller(app_config)

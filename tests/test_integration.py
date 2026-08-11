@@ -1,14 +1,12 @@
-"""One command to check the whole app: `python selftest.py`.
-
-Runs each module's own self-check, then the three things no single module can check by itself:
+"""The checks no single module can make about itself.
 
   1. that every name used in the GUI modules actually resolves — they only ever run on Windows with
      customtkinter/pystray/PIL installed, so a missing import there is invisible until launch day;
   2. the Cadence login round trip, through the config file and back, as a restart would do it;
   3. the Spotify OAuth redirect, against a real loopback socket.
 
-No test framework: asserts and a pass/fail line, same as the module self-checks. Everything is offline
-— the two logins run against a scripted transport, never a real server.
+Offline: both logins run against a scripted transport, never a real server. The per-module checks live
+beside these, one tests/test_<module>.py each.
 """
 
 import builtins
@@ -24,21 +22,12 @@ import urllib.request
 from types import SimpleNamespace
 from unittest import mock
 
-# The package directory; PROJECT is its parent, which is what sys.path needs.
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(HERE))
+# The PACKAGE directory, asked of the package itself rather than derived from this file's location —
+# tests/ is no longer next to the code, and `src/` put another level in between. An installed copy
+# answers this correctly too, which is the point of testing what was installed.
+import music_agent
 
-FAILURES = []
-
-
-def check(name, fn):
-    try:
-        fn()
-        print(f"  ok    {name}")
-    except Exception as e:
-        FAILURES.append(name)
-        print(f"  FAIL  {name}: {type(e).__name__}: {e}")
-
+PACKAGE = os.path.dirname(os.path.abspath(music_agent.__file__))
 
 # --------------------------------------------------------------------------------- fake HTTP replies
 class _Resp(SimpleNamespace):
@@ -54,7 +43,7 @@ def reply(status=200, payload=None, body=None, url="https://cadence.example/x"):
 
 
 # --------------------------------------------------------------------------------- 1. names resolve
-def names_resolve():
+def test_names_resolve():
     """Catch `os.path.join(...)` left behind after someone deleted `import os`.
 
     Uses the compiler's own symbol table: any name a function only READS, that resolves globally and
@@ -66,9 +55,9 @@ def names_resolve():
     problems = []
     # Walk the PACKAGE rather than a hand-kept list -- a module added later is checked without
     # anyone remembering to add it here, which is the only way this stays true.
-    for path in sorted(os.path.join(root, f) for root, _d, fs in os.walk(HERE)
+    for path in sorted(os.path.join(root, f) for root, _d, fs in os.walk(PACKAGE)
                        for f in fs if f.endswith(".py")):
-        name = os.path.relpath(path, HERE).replace(os.sep, ".")[:-3]
+        name = os.path.relpath(path, PACKAGE).replace(os.sep, ".")[:-3]
         # encoding= is not optional: these files are UTF-8 and Windows would otherwise decode them
         # with cp1252, where this check dies on the first em dash in a comment.
         top = symtable.symtable(open(path, encoding="utf-8").read(), path, "exec")
@@ -88,7 +77,7 @@ def names_resolve():
 
 
 # --------------------------------------------------------------------------------- 2. Cadence login
-def cadence_login():
+def test_cadence_login():
     """Sign in, restart, still signed in, sign out — the path a user actually walks."""
     from music_agent.backends import cadence
     from music_agent import config
@@ -140,7 +129,7 @@ def cadence_login():
         config.app_dir = real_app_dir
 
 
-def cadence_login_refused():
+def test_cadence_login_refused():
     """A wrong password must not leave anything behind."""
     from music_agent.backends import cadence
     from music_agent import config
@@ -162,7 +151,7 @@ def cadence_login_refused():
         config.app_dir = real_app_dir
 
 
-def credential_write_does_not_clobber():
+def test_credential_write_does_not_clobber():
     """A long-lived client persisting a credential must not revert what Settings saved meanwhile.
 
     Both backends hold the config dict they were constructed with and write it back much later — the
@@ -203,7 +192,7 @@ def credential_write_does_not_clobber():
         config.app_dir = real_app_dir
 
 
-def credentials_encrypted_at_rest():
+def test_credentials_encrypted_at_rest():
     """Every credential really is sealed on the way out — including the ones added since.
 
     DPAPI is a no-op off Windows (`_dpapi` returns None), so nothing else here exercises the encrypt/
@@ -258,7 +247,7 @@ def credentials_encrypted_at_rest():
         config.app_dir = real_app_dir
 
 
-def corrupt_config_never_raises():
+def test_corrupt_config_never_raises():
     """load_config's contract: any garbage on disk yields defaults rather than stopping the launch."""
     from music_agent import config
 
@@ -323,42 +312,16 @@ def spotify_consent(port=8899, wrong_state=False):
     assert post.call_args.kwargs["headers"]["Authorization"].startswith("Basic ")
 
 
-# --------------------------------------------------------------------------------- run everything
-def main():
-    print("module self-checks")
-    from music_agent.backends import cadence
-    from music_agent import config
-    from music_agent.net import httpmin
-    from music_agent import cli
-    from music_agent.backends import spotify
-    checks = [("net.httpmin", httpmin.selftest), ("config", config.demo), ("backends.cadence", cadence.selftest),
-              ("spotify", spotify.selftest), ("cli", cli.selftest)]
-    if os.name == "nt":
-        # RegisterHotKey is the whole module; there is nothing to check where it doesn't exist, and
-        # `import ctypes.wintypes` raises off Windows before it could say so.
-        from music_agent.win32 import hotkeys
-        checks.insert(1, ("win32.hotkeys", hotkeys.selftest))
-    for name, fn in checks:
-        check(name, fn)
-
-    print("\ncross-module")
-    check("every name in every module resolves", names_resolve)
-    check("cadence: login, restart, sign out", cadence_login)
-    check("cadence: a wrong password saves nothing", cadence_login_refused)
-    check("a credential write never reverts a settings save", credential_write_does_not_clobber)
-    check("every credential is encrypted at rest", credentials_encrypted_at_rest)
-    check("a corrupt config yields defaults, never a crash", corrupt_config_never_raises)
-    check("spotify: consent on a real socket", lambda: spotify_consent(8899))
-    check("spotify: a mismatched state is refused", lambda: spotify_consent(8902, wrong_state=True))
-    check("spotify: the port is free for a second attempt", lambda: spotify_consent(8899))
-
-    print()
-    if FAILURES:
-        print(f"{len(FAILURES)} FAILED: {', '.join(FAILURES)}")
-        return 1
-    print("everything passed")
-    return 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_spotify_consent_on_a_real_socket():
+    spotify_consent(8899)
+
+
+def test_spotify_consent_refuses_a_mismatched_state():
+    spotify_consent(8902, wrong_state=True)
+
+
+def test_spotify_consent_port_is_free_for_a_second_attempt():
+    """The callback server must release its port, or the next consent cannot bind it."""
+    spotify_consent(8899)

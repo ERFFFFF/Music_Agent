@@ -1,0 +1,5 @@
+[console_scripts]
+music-agent = music_agent.cli:main
+
+[gui_scripts]
+music-agent-tray = music_agent.ui.tray:main

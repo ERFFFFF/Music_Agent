@@ -31,12 +31,15 @@ $PyInstaller = "pyinstaller==6.22.0"
 python -m pip install -r requirements-gui.txt $PyInstaller
 # --onefile: everything in one file. --noconsole: it's a tray app, a console window would just sit
 # there. The icon is added as data too, because find_icon() looks for it beside the exe AND in _MEIPASS.
+# --paths src: the package lives under src/ now, so PyInstaller has to be told where to find it.
+# This keeps the build working WITHOUT `pip install -e .` first, which a clean checkout will not have.
 pyinstaller `
     --onefile `
     --noconsole `
     --name "MusicAgent_portable" `
     --icon "poulet.ico" `
     --add-data "poulet.ico;." `
+    --paths src `
     tray_entry.py
 
 Write-Host ""
