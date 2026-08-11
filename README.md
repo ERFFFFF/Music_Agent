@@ -188,12 +188,31 @@ HOTKEY_LIKE_UNLIKE=ctrl+alt+l
 HOTKEY_SHOW_CURRENT=ctrl+alt+c
 ```
 
+### Seeing what it's doing
+
+```powershell
+python music_agent_cli.py -d          # the agent, streaming every HTTP call, status and timing
+python music_agent_cli.py -d now      # ...or on any one-shot command
+```
+
+The tray app shows the same log on **Settings → Logs**, live, with the history from before you
+opened it, plus Copy and Clear. It is held **in memory only** — never written to disk, and gone when
+the app exits — because a log file naming your server and your account is a support burden and a
+privacy question nobody asked for.
+
 ### Behind a corporate proxy
 
 ```ini
-PROXY=http://proxy.corp.example:8080     # or http://user:pass@proxy:8080
+PROXY=proxy.corp.example:8080            # address; host:port is enough
+PROXY_USER=alice                         # optional
+PROXY_PASSWORD=s3cr3t                    # optional
 NO_PROXY=localhost,127.0.0.1             # optional, comma-separated
 ```
+
+User and password are separate keys rather than `user:pass@host` so a password containing `@`, `:`
+or `/` cannot split the URL — the app percent-encodes them for you. The same three boxes are in the
+tray app under **Settings → Corporate proxy**, along with the Windows-login checkbox; all optional,
+and empty means connect directly.
 
 **On a network that mandates a proxy, the failure does not look like a proxy problem.** You get
 `Can't reach … : [Errno 11001] getaddrinfo failed` — a *DNS* error — because the client is not

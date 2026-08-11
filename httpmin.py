@@ -32,6 +32,8 @@ Importable everywhere (pure stdlib), so cadence.py's self-check still runs off W
 import http.client
 import http.cookiejar
 import json as _json
+import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -124,6 +126,7 @@ def use_windows_transport(enabled):
     if not winhttp.available():
         return False
     _transport = winhttp.request
+    logging.debug("HTTP transport: winhttp (Windows stack, proxy auth as the logged-in user)")
     return True
 
 
@@ -157,9 +160,20 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
     opener = urllib.request.build_opener(*handlers)
 
     req = urllib.request.Request(url, data=body, headers=sent, method=method.upper())
+    # Debug logging is how a network problem gets diagnosed without a packet capture: which URL, which
+    # status, how long, and how big. The URL can carry a token in a query string, so it is logged
+    # path-and-host only — never the full query, never a header (Authorization lives there).
+    started = time.monotonic()
+    safe = urllib.parse.urlsplit(url)
+    where = f"{method.upper()} {safe.scheme}://{safe.netloc}{safe.path}"
+    logging.debug("%s ...", where)
     try:
         with opener.open(req, timeout=timeout) as r:
-            return Response(r.status, r.read(), r.headers, r.geturl(), redirects.history)
+            answer = Response(r.status, r.read(), r.headers, r.geturl(), redirects.history)
+        logging.debug("%s -> %s  %dB in %.0fms%s", where, answer.status_code, len(answer.content),
+                      (time.monotonic() - started) * 1000,
+                      f"  ({len(answer.history)} redirect(s))" if answer.history else "")
+        return answer
     except urllib.error.HTTPError as e:
         # >= 400 is an answer, not a failure — the backends turn the status into the sentence to show.
         # The cookie handler has already run by now (it sits ahead of HTTPErrorProcessor), so a
@@ -168,6 +182,8 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
             content = e.read()
         finally:
             e.close()
+        logging.debug("%s -> %s  %dB in %.0fms", where, e.code, len(content),
+                      (time.monotonic() - started) * 1000)
         return Response(e.code, content, e.headers, e.url, redirects.history)
     except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
         # HTTPException covers the connection dying MID-RESPONSE — IncompleteRead when a proxy or a
@@ -175,6 +191,7 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
         # moment. Measured against a proxy that truncated a reply: without this it escapes as a raw
         # http.client.IncompleteRead, straight past cadence._request's error mapping, and reaches the
         # user as a traceback-shaped string instead of "Can't reach Cadence at ...".
+        logging.debug("%s -> FAILED in %.0fms: %s", where, (time.monotonic() - started) * 1000, e)
         raise RequestError(getattr(e, "reason", None) or e) from e
 
 

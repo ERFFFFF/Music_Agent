@@ -84,6 +84,7 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 
 ```
 main.py                 # Tray app: mode selection, hotkeys, tray, Windows notifications
+applog.py               # The log: an in-memory ring buffer. NO FILE, by design. All 3 front ends.
 music_agent_cli.py      # Same app without a GUI. NO ARGUMENTS = run the hotkey agent (the default
                         # job); the verbs are extra one-shots for scripting
 httpmin.py              # The HTTP layer: urllib.request in a `requests` shape. No dependencies.
@@ -178,6 +179,14 @@ Browser consent runs on the **calling thread, which is the hotkey thread**. Ever
 ### tkinter variables
 
 Every `ctk.StringVar` passes an explicit `master=`. A masterless one attaches to `_default_root` — the first root created, released only when *destroyed*, not when withdrawn. Opened from the tray, Settings withdraws its root, so the variable ended up in a different Tcl interpreter than its entry widget: **fields rendered blank and nothing typed was ever read back**, making Settings → Sign in impossible to complete. It only ever worked at launch because those windows destroy each root before the next opens.
+
+### Logging
+
+- **One buffer, three front ends.** `applog` is a `logging.Handler` over a bounded deque; `music_agent_cli.py -d` prints it to the console and the tray app's **Settings -> Logs** tab shows it live. What you see in the window is what the CLI would have printed, which is the point — a problem reported from one front end is reproducible in the other.
+- **Deliberately no file.** A log on disk is a support burden (where, how big, who deletes it) and a privacy question: the lines name the server and the account. It dies with the process. Do not "improve" this by adding a FileHandler without asking.
+- **Readers POLL, they are not called back.** Lines arrive from the keyboard thread and from whatever thread an HTTP call runs on; Tk may only be touched from the thread owning the widget. `applog.since(cursor)` lets the window ask on its own `after()` timer — that is the entire synchronisation story, and a callback straight into the textbox would be a crash waiting for the right timing.
+- **Records are formatted on the thread that logged them**, not when read: a message can name an object whose `repr` changes (or raises) later. `applog.demo()` covers the ring-buffer wrap, the cursor, and an unformattable record.
+- **`httpmin` logs every call at DEBUG** — method, scheme://host/path, status, bytes, milliseconds — deliberately WITHOUT the query string or any header, because tokens live in both. That log is how a network problem gets diagnosed without a packet capture.
 
 ## Hotkeys
 

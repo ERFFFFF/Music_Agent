@@ -26,6 +26,7 @@ import keyboard
 import pystray
 from PIL import Image
 
+import applog
 from cadence import client_from_config
 from config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
                     save_config)
@@ -44,13 +45,16 @@ def initialize_logging():
     log_file = os.path.join(app_data_path, "music_agent_control.log")
     log_format = "%(asctime)s:%(levelname)s:%(message)s"
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format=log_format,
         handlers=[
             logging.FileHandler(log_file),
             logging.StreamHandler(sys.stdout),
         ],
     )
+    # The tray app's Logs page reads this buffer — the same one music_agent_cli.py -d prints — so a
+    # problem described from one front end looks identical in the other. In memory only; see applog.
+    applog.install(logging.DEBUG)
     logging.info("Logging initialized.")
 
 

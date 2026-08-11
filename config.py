@@ -33,6 +33,8 @@ import json
 import logging
 import os
 import sys
+import urllib.parse
+import urllib.request
 
 CONFIG_FILENAME = "cadence_config.txt"
 
@@ -86,6 +88,13 @@ DEFAULTS = {
     # this module. It is a bearer credential, so it is in SECRET_FIELDS and travels no further than
     # the Windows account that saved it — same rule as the Cadence session.
     "spotify_refresh_token": "",
+    # Corporate proxy. All optional: empty means "connect directly", which is what almost every
+    # machine wants. Kept as ordinary config fields rather than environment-only so the Settings
+    # window can offer them — the .env still overrides, like everything else.
+    "proxy_url": "",            # host:port, or a full http://host:port
+    "proxy_user": "",
+    "proxy_password": "",
+    "proxy_auth": "",           # "current-user" to authenticate as the logged-in Windows account
     "hotkeys": dict(DEFAULT_HOTKEYS),
 }
 
@@ -122,6 +131,13 @@ ENV_FIELDS = {
     "SPOTIFY_CLIENT_ID": "spotify_client_id",
     "SPOTIFY_CLIENT_SECRET": "spotify_client_secret",
     "SPOTIFY_REDIRECT_URI": "spotify_redirect_uri",
+    "PROXY": "proxy_url",
+    "PROXY_URL": "proxy_url",
+    "PROXY_USER": "proxy_user",
+    "PROXY_USERNAME": "proxy_user",
+    "PROXY_PASSWORD": "proxy_password",
+    "PROXY_PASS": "proxy_password",
+    "PROXY_AUTH": "proxy_auth",
 }
 
 
@@ -141,28 +157,55 @@ ENV_PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
 PROXY_AUTH_CURRENT_USER = ("current-user", "currentuser", "windows", "sspi", "negotiate", "ntlm")
 
 
-def apply_env_proxy():
-    """Export the `.env`'s proxy settings into the environment, where urllib will find them.
+def proxy_url(cfg):
+    """The full proxy address, credentials folded in, or "" when no proxy is configured.
 
-    `PROXY=` is the friendly form — one address for both schemes. `HTTP_PROXY` / `HTTPS_PROXY` /
-    `NO_PROXY` are passed through untouched for anyone who needs them to differ. Returns what it set,
-    so `status` can show it.
+    `proxy_user` / `proxy_password` are kept as separate fields rather than as `user:pass@host` so
+    the Settings window can have three ordinary boxes and so the password can be sealed on its own.
+    They are quoted with `safe=""` on the way in: a proxy password containing `@`, `:` or `/` would
+    otherwise split the URL somewhere other than where it means to, and the failure looks like a
+    wrong password rather than a parsing bug.
+    """
+    address = (cfg.get("proxy_url") or "").strip()
+    if not address:
+        return ""
+    if "://" not in address:
+        address = "http://" + address
+    user, password = (cfg.get("proxy_user") or "").strip(), cfg.get("proxy_password") or ""
+    if not user:
+        return address
+    scheme, _, rest = address.partition("://")
+    rest = rest.partition("@")[2] or rest          # never stack credentials onto an address that has some
+    quote = urllib.parse.quote
+    secret = f":{quote(password, safe='')}" if password else ""
+    return f"{scheme}://{quote(user, safe='')}{secret}@{rest}"
 
-    The `.env` WINS over a variable already in the shell, same as every other setting it supplies —
-    otherwise "what the .env supplies, the .env owns" would have one silent exception. A `.env` with
-    no proxy line sets nothing, so a shell variable still works on its own.
+
+def apply_proxy(cfg):
+    """Put the configured proxy where urllib will find it — the environment — and pick the transport.
+
+    ONE function for both front ends: `cfg` has already had the .env overlaid, so a proxy typed into
+    Settings and one written into the .env arrive here identically, with the .env winning as usual.
+
+    Returns what it set, for `status` and the Settings window to display.
     """
     path = env_path()
     raw = {k.upper(): v for k, v in _read_env(path).items()} if path else {}
-    both = raw.get("PROXY", "")
+    composed = proxy_url(cfg)
     applied = {}
     for key in ENV_PROXY_KEYS:
-        value = raw.get(key) or (both if key != "NO_PROXY" else "")
+        # HTTP_PROXY/HTTPS_PROXY/NO_PROXY straight from the .env are for the rare case where the two
+        # schemes must differ; otherwise the one composed address covers both.
+        value = raw.get(key) or (composed if key != "NO_PROXY" else "")
         if value:
             os.environ[key] = value
             applied[key] = value
+        else:
+            # Clearing matters as much as setting: emptying the proxy in Settings has to actually
+            # stop using it, and a stale variable in this process would quietly keep it alive.
+            os.environ.pop(key, None)
 
-    # PROXY_AUTH=current-user means "authenticate to the proxy as whoever is logged in", i.e. NTLM or
+    # proxy_auth=current-user means "authenticate to the proxy as whoever is logged in", i.e. NTLM or
     # Negotiate over SSPI. urllib cannot do that at all — measured against proxies demanding each, it
     # never attempts them and just surfaces the 407 — so this switches the transport to Windows' own
     # HTTP stack, which does it (and reads a PAC file, which urllib also cannot).
@@ -171,13 +214,30 @@ def apply_env_proxy():
     # and so a machine that never asks for this never loads either transport module.
     import httpmin
 
-    wanted = raw.get("PROXY_AUTH", "").strip().lower().replace("_", "-") in PROXY_AUTH_CURRENT_USER
+    wanted = (cfg.get("proxy_auth") or "").strip().lower().replace("_", "-") in PROXY_AUTH_CURRENT_USER
     # Always called, including with False: the default transport has to be restored if the setting is
     # removed, or a process that once saw it would keep the other one for its whole life.
     in_effect = httpmin.use_windows_transport(wanted)
     if wanted:
         applied["PROXY_AUTH"] = "current-user" if in_effect else "current-user (UNAVAILABLE: not Windows)"
+    logging.debug("Proxy in effect: %s", redact_url(applied.get("HTTPS_PROXY", "")) or "none (direct)")
     return applied
+
+
+def redact_url(url):
+    """`http://user:pass@proxy:8080` -> `http://user:***@proxy:8080`, for anything user-visible.
+
+    Lives here because the CLI's `status`, the Settings window and the debug log all need it, and a
+    proxy URL with a password in it is exactly the line someone pastes into a chat asking for help.
+    """
+    if not url:
+        return url
+    scheme, _, rest = url.rpartition("://")
+    userinfo, at, hostpart = rest.rpartition("@")
+    if not at:
+        return url
+    user = userinfo.partition(":")[0]
+    return f"{scheme}://{user}:***@{hostpart}" if scheme else f"{user}:***@{hostpart}"
 
 
 def normalize_url(raw):
@@ -201,7 +261,8 @@ def normalize_url(raw):
 # sign in once there. `mode` and `hotkeys` are deliberately left plaintext so a moved copy still keeps
 # its shortcuts and doesn't look corrupt.
 SECRET_FIELDS = ("cadence_url", "cadence_session", "cf_access_client_id", "cf_access_client_secret",
-                 "spotify_client_id", "spotify_client_secret", "spotify_refresh_token")
+                 "spotify_client_id", "spotify_client_secret", "spotify_refresh_token",
+                 "proxy_password")
 ENC_PREFIX = "enc:"
 CRYPTPROTECT_UI_FORBIDDEN = 0x1  # this is a --noconsole tray app: never let DPAPI pop a dialog
 
@@ -472,7 +533,7 @@ def load_config():
     cfg.update(env)
     # Every entry point loads the config before it makes a request, so this is the one place that
     # guarantees the proxy is in effect for both front ends without either of them knowing about it.
-    apply_env_proxy()
+    apply_proxy(cfg)
     if cfg.get("mode") not in MODES:
         cfg["mode"] = DEFAULTS["mode"]
     if plaintext_on_disk:
@@ -759,7 +820,24 @@ def demo():
         try:
             for key in ENV_PROXY_KEYS:
                 os.environ.pop(key, None)
-            assert apply_env_proxy() == {}, "no .env is a normal state here too"
+            assert apply_proxy(load_config()) == {}, "no proxy configured is normal"
+
+            # Credentials are separate fields so Settings can have three boxes; they have to compose
+            # into one URL, and a password with URL punctuation in it must not split that URL.
+            assert proxy_url({"proxy_url": ""}) == "", "no address means no proxy, not 'http://'"
+            assert proxy_url({"proxy_url": "proxy:8080"}) == "http://proxy:8080", "bare host gains a scheme"
+            assert proxy_url({"proxy_url": "http://p:3128", "proxy_user": "alice"}) == \
+                "http://alice@p:3128", "a user with no password is still a user"
+            composed = proxy_url({"proxy_url": "p:8080", "proxy_user": "corp\\alice",
+                                  "proxy_password": "p@ss:w/rd"})
+            assert composed == "http://corp%5Calice:p%40ss%3Aw%2Frd@p:8080", composed
+            # ...and that really is one parseable URL, with the original values back out of it
+            parsed = urllib.parse.urlsplit(composed)
+            assert parsed.hostname == "p" and parsed.port == 8080, parsed
+            assert urllib.parse.unquote(parsed.username) == "corp\\alice"
+            assert urllib.parse.unquote(parsed.password) == "p@ss:w/rd"
+            # a domain\user and its password must never be readable in anything we display
+            assert redact_url(composed).endswith("@p:8080") and "%2Frd" not in redact_url(composed)
 
             with open(os.path.join(d, ENV_FILENAME), "w") as f:
                 f.write("PROXY=http://corp:8080\n")
@@ -778,7 +856,6 @@ def demo():
 
             # ...and urllib really reads what was exported. That is the ONLY reason this works: the
             # proxy is never passed to httpmin, it is picked up by the ProxyHandler in every opener.
-            import urllib.request
             assert urllib.request.getproxies().get("https") == "http://secure:8443"
         finally:
             for key, value in saved.items():

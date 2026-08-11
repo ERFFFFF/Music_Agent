@@ -32,6 +32,7 @@ import os
 import sys
 import time
 
+import applog
 import config
 from cadence import CadenceController, CadenceError, client_from_config
 from config import (ACTIONS, DEFAULT_HOTKEYS, DEFAULTS, MODES, config_path, env_config, env_path,
@@ -73,21 +74,6 @@ def _ask(prompt, current="", secret=False):
 
 def _env_note():
     return f"Edit {env_path() or config.ENV_FILENAME} to change it."
-
-
-def _redact(url):
-    """`http://user:pass@proxy:8080` -> `http://user:***@proxy:8080`.
-
-    Enterprise proxies routinely carry credentials inline, and `status` is the command people paste
-    into a chat when asking for help. The host has to stay readable — it is the whole point of the
-    line — so only the password goes.
-    """
-    scheme, _, rest = url.rpartition("://")
-    userinfo, at, hostpart = rest.rpartition("@")
-    if not at:
-        return url
-    user = userinfo.partition(":")[0]
-    return f"{scheme}://{user}:***@{hostpart}" if scheme else f"{user}:***@{hostpart}"
 
 
 def _cadence_sign_in(client, cfg, interactive=True):
@@ -201,10 +187,10 @@ def cmd_status(cfg, args):
     import urllib.request
 
     proxies = urllib.request.getproxies()
-    from_env = config.apply_env_proxy()
+    from_env = config.apply_proxy(cfg)
     if proxies:
         where = "  (.env)" if from_env else "  (environment / Windows settings)"
-        print(f"Proxy       : {', '.join(f'{k}={_redact(v)}' for k, v in sorted(proxies.items()))}{where}")
+        print(f"Proxy       : {', '.join(f'{k}={config.redact_url(v)}' for k, v in sorted(proxies.items()))}{where}")
     else:
         print("Proxy       : none — connecting directly")
     print(f"Mode        : {cfg['mode']}{source('mode')}")
@@ -403,7 +389,8 @@ def cmd_run(cfg, args):
     for combo, action_id in labels.items():
         print(f"  {combo:<22} {action_id}")
     print(f"\nMusic Agent running in {cfg['mode']} mode. Ctrl+C to stop.")
-    print("Every press prints a line below.\n")
+    hint = "" if args.debug else "  (add -d to stream the debug log too)"
+    print(f"Every press prints a line below.{hint}\n")
     # Anything that fails to register reports here, right after the list above and before the loop
     # blocks — one combination another app already owns must not take the other four with it.
     bound = winhotkeys.listen(bindings, on_error=lambda combo, why: print(
@@ -418,6 +405,8 @@ def build_parser():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="show the backends' log lines (which request, which device, which token)")
+    parser.add_argument("-d", "--debug", action="store_true",
+                        help="everything -v shows, plus every HTTP call, its status and its timing")
     # No verb runs the hotkey agent. That is what this program IS — you start it, it stays up, it
     # listens. The one-shot verbs are the extra, useful for scripting; making them mandatory meant the
     # obvious command (`python music_agent_cli.py`) printed a usage error at someone whose actual
@@ -623,8 +612,12 @@ def main(argv=None):
     # Quiet by default. Without a handler, logging's last-resort one prints WARNING and above to
     # stderr — so every backend error appeared TWICE: once as `ERROR:root:...` and once as the
     # sentence this file prints itself. -v turns the log back on, at the level that is worth reading.
-    logging.basicConfig(level=logging.INFO if args.verbose else logging.CRITICAL,
-                        format="%(levelname)s %(message)s")
+    level = logging.DEBUG if args.debug else logging.INFO if args.verbose else logging.CRITICAL
+    logging.basicConfig(level=level, format=applog.FORMAT, datefmt=applog.DATEFMT)
+    # The in-memory buffer runs regardless of what the console shows: it costs a deque of strings, and
+    # it is the SAME buffer the tray app's Logs page displays — so a problem reported from one front
+    # end reads identically in the other.
+    applog.install(logging.DEBUG)
 
     if args.command == "selftest":
         return selftest()

@@ -2,6 +2,9 @@ import threading
 import customtkinter as ctk
 import keyboard
 
+import applog
+import config as config_module
+
 from cadence import client_from_config
 from config import (load_config, save_config, find_icon, env_config, env_path, DEFAULT_HOTKEYS,
                     ENV_HOTKEY_PREFIX, MODES)
@@ -69,9 +72,25 @@ class SettingsWindow:
         self.root.mainloop()
 
     def _build_ui(self):
-        # Main container
-        main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
-        main_frame.pack(padx=30, pady=25, fill="both", expand=True)
+        # Two tabs, because the Logs page is a different job from the settings and does not want to
+        # push the Save button off the bottom of a window that cannot be resized.
+        tabs = ctk.CTkTabview(self.root, width=600, height=600, corner_radius=12)
+        tabs.pack(padx=20, pady=(10, 0), fill="both", expand=True)
+        tabs.add("Settings")
+        tabs.add("Logs")
+        self._build_logs_tab(tabs.tab("Logs"))
+
+        # Save/Cancel are packed to the BOTTOM of the tab first, so they reserve their strip before
+        # anything else claims the space -- and they live OUTSIDE the scroll area, because a Save
+        # button you have to scroll to find is a Save button people miss. Adding the proxy card
+        # pushed the last hotkey row and this whole bar off the bottom of a non-resizable window;
+        # measured on a screenshot, which is the only way that kind of bug is ever noticed.
+        self.button_area = ctk.CTkFrame(tabs.tab("Settings"), fg_color="transparent")
+        self.button_area.pack(side="bottom", fill="x", padx=12, pady=(4, 10))
+
+        # Main container: scrollable, so a card added later cannot clip the window again.
+        main_frame = ctk.CTkScrollableFrame(tabs.tab("Settings"), fg_color="transparent")
+        main_frame.pack(side="top", padx=6, pady=5, fill="both", expand=True)
 
         # Header
         header_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -91,6 +110,7 @@ class SettingsWindow:
         ).pack(anchor="w", pady=(4, 0))
 
         self._build_account_card(main_frame)
+        self._build_proxy_card(main_frame)
 
         # Keybinds card
         card = ctk.CTkFrame(main_frame, corner_radius=12)
@@ -172,8 +192,8 @@ class SettingsWindow:
         # Bottom padding inside card
         ctk.CTkFrame(card, height=12, fg_color="transparent").pack()
 
-        # Button bar
-        btn_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        # Button bar — parented to the pinned strip above, not to the scrolling content.
+        btn_frame = ctk.CTkFrame(self.button_area, fg_color="transparent")
         btn_frame.pack(fill="x")
 
         ctk.CTkButton(
@@ -216,6 +236,66 @@ class SettingsWindow:
             command=self._save,
         ).pack(side="right", padx=(0, 10))
 
+    def _build_logs_tab(self, parent):
+        """Live log, in memory, gone when the app exits — see applog.py for why there is no file.
+
+        The window POLLS `applog.since()` on a Tk timer rather than being called back when a line is
+        written. Lines arrive from the keyboard thread and from whatever thread an HTTP call is on,
+        and Tk may only be touched from the thread that owns the widget, so a callback straight into
+        the textbox is a crash waiting for the right timing. A 400 ms poll is invisible to a reader
+        and turns the wholeproblem into one that cannot happen.
+        """
+        bar = ctk.CTkFrame(parent, fg_color="transparent")
+        bar.pack(fill="x", padx=10, pady=(8, 4))
+        ctk.CTkLabel(bar, text="Live log", font=ctk.CTkFont(size=14, weight="bold")).pack(side="left")
+        ctk.CTkLabel(bar, text="in memory only — not written to disk, and cleared when the app exits",
+                     font=ctk.CTkFont(size=11),
+                     text_color=("gray50", "gray60")).pack(side="left", padx=(10, 0))
+
+        self.log_follow = ctk.StringVar(master=self.root, value="on")
+        ctk.CTkCheckBox(bar, text="Follow", variable=self.log_follow, onvalue="on", offvalue="off",
+                        font=ctk.CTkFont(size=12), checkbox_width=18,
+                        checkbox_height=18).pack(side="right")
+        ctk.CTkButton(bar, text="Copy", width=60, height=28, corner_radius=8,
+                      font=ctk.CTkFont(size=12), command=self._copy_logs).pack(side="right", padx=6)
+        ctk.CTkButton(bar, text="Clear", width=60, height=28, corner_radius=8, fg_color="transparent",
+                      border_width=1, border_color=("gray60", "gray40"),
+                      text_color=("gray30", "gray70"), font=ctk.CTkFont(size=12),
+                      command=self._clear_logs).pack(side="right")
+
+        self.log_box = ctk.CTkTextbox(parent, wrap="none", font=ctk.CTkFont(size=12, family="Consolas"),
+                                      corner_radius=8)
+        self.log_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.log_box.configure(state="disabled")
+        self._log_cursor = 0
+        self._pump_logs()
+
+    def _pump_logs(self):
+        """Append whatever is new. Re-arms itself, and stops cleanly once the window is gone."""
+        try:
+            lines, self._log_cursor = applog.since(self._log_cursor)
+            if lines:
+                self.log_box.configure(state="normal")
+                self.log_box.insert("end", "\n".join(lines) + "\n")
+                self.log_box.configure(state="disabled")
+                if self.log_follow.get() == "on":
+                    self.log_box.see("end")
+            self.root.after(400, self._pump_logs)
+        except Exception:  # noqa: BLE001 — the window closed mid-poll; nothing to report to anyone
+            pass
+
+    def _clear_logs(self):
+        applog.clear()
+        self._log_cursor = applog.since(self._log_cursor)[1]
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state="disabled")
+
+    def _copy_logs(self):
+        """The whole buffer onto the clipboard — the point of a log page is handing it to someone."""
+        self.root.clipboard_clear()
+        self.root.clipboard_append(self.log_box.get("1.0", "end"))
+
     def _build_account_card(self, parent):
         """Which service the hotkeys drive, and the Cadence sign-in that goes with it.
 
@@ -256,6 +336,61 @@ class SettingsWindow:
                                          text_color=("gray50", "gray60"), wraplength=440, justify="left")
         self.account_hint.pack(anchor="w", padx=20, pady=(0, 14))
         self._refresh_account()
+
+    def _build_proxy_card(self, parent):
+        """Three optional boxes for a corporate proxy. Empty means "connect directly", which is what
+        almost every machine wants — so this card says so rather than looking like something unset.
+
+        The symptom of a MISSING proxy on a network that mandates one is "cannot resolve the host",
+        which reads as broken DNS and sends people looking in the wrong place entirely; the hint under
+        the boxes is there to shorten that.
+        """
+        owned = env_config()
+        card = ctk.CTkFrame(parent, corner_radius=12)
+        card.pack(fill="x", pady=(0, 16))
+
+        ctk.CTkLabel(card, text="Corporate proxy — optional",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(anchor="w", padx=20, pady=(14, 2))
+        ctk.CTkLabel(card, text="Leave empty to connect directly. Fill this in only if your network "
+                                "forces traffic through a proxy —\nthe sign it does is “cannot "
+                                "resolve the host”, which looks like a DNS fault but is not one.",
+                     font=ctk.CTkFont(size=11), justify="left",
+                     text_color=("gray50", "gray60")).pack(anchor="w", padx=20, pady=(0, 8))
+
+        self.proxy_vars = {}
+        for field, label, secret in (("proxy_url", "Proxy address", False),
+                                     ("proxy_user", "Username", False),
+                                     ("proxy_password", "Password", True)):
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=20, pady=3)
+            ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=13), width=110,
+                         anchor="w").pack(side="left")
+            var = ctk.StringVar(master=self.root, value=self.config.get(field, ""))
+            self.proxy_vars[field] = var
+            entry = ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
+                                 font=ctk.CTkFont(size=13),
+                                 placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "",
+                                 show="•" if secret else "")
+            entry.pack(side="left", padx=(10, 0))
+            # Same rule as everywhere else: a field the .env owns is shown, not editable, because
+            # save_config would drop whatever was typed here.
+            if field in owned:
+                entry.configure(state="disabled")
+                ctk.CTkLabel(row, text=".env", font=ctk.CTkFont(size=11),
+                             text_color=("gray50", "gray60")).pack(side="left", padx=(8, 0))
+
+        row = ctk.CTkFrame(card, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(6, 14))
+        self.proxy_auth_var = ctk.StringVar(
+            master=self.root,
+            value="on" if (self.config.get("proxy_auth") or "").strip() else "off")
+        check = ctk.CTkCheckBox(
+            row, text="Sign in to the proxy as my Windows user (NTLM / Kerberos)",
+            variable=self.proxy_auth_var, onvalue="on", offvalue="off",
+            font=ctk.CTkFont(size=12), checkbox_width=18, checkbox_height=18)
+        check.pack(side="left")
+        if "proxy_auth" in owned:
+            check.configure(state="disabled")
 
     def _refresh_account(self):
         """Say what the selected mode needs and whether it has it. Local checks only (a file exists or
@@ -475,8 +610,15 @@ class SettingsWindow:
 
         self.config["hotkeys"] = new_hotkeys
         self.config["mode"] = self.mode_var.get()
+        for field, var in self.proxy_vars.items():
+            self.config[field] = var.get().strip()
+        self.config["proxy_auth"] = "current-user" if self.proxy_auth_var.get() == "on" else ""
         try:
             save_config(self.config)
+            # Apply immediately rather than at the next launch: someone who just typed a proxy in is
+            # about to press Sign in, and doing that through the old (absent) proxy would tell them
+            # the address is wrong when it is the timing that is.
+            config_module.apply_proxy(load_config())
         except OSError:
             error_dialog = ctk.CTkToplevel(self.root)
             error_dialog.title("Save Error")
