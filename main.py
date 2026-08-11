@@ -27,7 +27,8 @@ import pystray
 from PIL import Image
 
 from cadence import client_from_config
-from config import ACTIONS, appdata_dir, find_icon, is_configured, load_config, save_config
+from config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
+                    save_config)
 import login_ui
 from settings_ui import open_settings
 
@@ -128,7 +129,9 @@ tray_icon = None
 def run_setup(cfg):
     """First run (or a copy that lost its credentials): ask which service, then set it up. Returns the
     chosen mode, or None if the user closed the window."""
-    mode = login_ui.choose_mode(cfg)
+    # A .env that pins MODE has already answered this. load_config applies it AFTER the saved config,
+    # so asking would put up a window whose answer gets overruled on the next launch.
+    mode = env_config().get("mode") or login_ui.choose_mode(cfg)
     if mode is None:
         return None
     cfg["mode"] = mode

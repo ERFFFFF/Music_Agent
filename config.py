@@ -11,12 +11,19 @@ Format is JSON (readable, and one parser instead of three) holding the whole con
       "hotkeys": {"play_pause": "ctrl+alt+up", ...}
     }
 
-It replaces the old config.json + cadence_session.json + .env trio, which scattered one app's settings
-across three files and two directories; those are migrated in on first run and then left alone.
+It replaces the old config.json + cadence_session.json trio, which scattered one app's settings across
+three files and two directories; those are migrated in on first run and then left alone.
 
-SECURITY: every credential in here (session cookie, Cadence URL, Spotify and Cloudflare keys) is
-encrypted at rest with Windows DPAPI — see SECRET_FIELDS below. `mode` and `hotkeys` stay readable on
-purpose. The file is also written 0600 where the OS honours that. "Sign out" in Settings clears the
+**A `.env` beside the app overrides all of it** (see ENV_FIELDS). That is the file an operator owns and
+edits by hand: server address, Cloudflare service token, Cadence account, Spotify app keys. Anything it
+supplies is read fresh on every load and is *never written back* — `save_config` blanks those fields,
+so a secret cannot end up duplicated in cadence_config.txt where it would have to be rotated twice.
+What cadence_config.txt still owns is the things the app itself earns or the user picks in the UI: the
+session cookie, the Spotify refresh token, the mode and the hotkeys.
+
+SECURITY: every credential still stored here (session cookie, Cadence URL, Spotify and Cloudflare keys)
+is encrypted at rest with Windows DPAPI — see SECRET_FIELDS below. `mode` and `hotkeys` stay readable
+on purpose. The file is also written 0600 where the OS honours that. "Sign out" in Settings clears the
 session.
 """
 
@@ -39,7 +46,7 @@ DEFAULT_HOTKEYS = {
 
 # hotkey/config action id -> the controller method it calls. Both backends implement all five
 # (cadence.CadenceController, spotify_backend.SpotifyController), and both front ends — the tray app and
-# cli.py — bind through this one map so a renamed action can't half-work.
+# music_agent_cli.py — bind through this one map so a renamed action can't half-work.
 ACTIONS = {
     "play_pause": "play_pause",
     "next_track": "next_track",
@@ -81,6 +88,53 @@ DEFAULTS = {
     "spotify_refresh_token": "",
     "hotkeys": dict(DEFAULT_HOTKEYS),
 }
+
+# ------------------------------------------------------------------------ the operator's own .env
+# The one file a human edits by hand, and the one place a secret has to live. `.env` keys on the left,
+# config fields on the right; matching ignores case. Aliases are listed generic-first, specific-last,
+# so a file carrying both DOMAIN and CADENCE_URL resolves to the unambiguous one.
+#
+# `cadence_username` / `cadence_password` are deliberately NOT in DEFAULTS: they exist only in this
+# dict and in memory, so `save_config` (which is built from DEFAULTS) cannot write an account password
+# to disk even by accident. The app stores the SESSION it exchanges them for, never the password.
+ENV_FILENAME = ".env"
+
+# The shortcuts, one .env key per action: HOTKEY_PLAY_PAUSE=ctrl+alt+up, and so on. Derived from
+# ACTIONS rather than typed out, so adding an action cannot leave it unconfigurable — and so the key
+# name is always predictable from the action id instead of being a second thing to look up.
+#
+# These are NOT in ENV_FIELDS: hotkeys are a nested dict, not a flat field, so env_config() merges
+# them key-by-key (a .env that sets one shortcut must keep the defaults for the other four). Handled
+# in env_config() below.
+ENV_HOTKEY_PREFIX = "HOTKEY_"
+ENV_HOTKEYS = {ENV_HOTKEY_PREFIX + action_id.upper(): action_id for action_id in ACTIONS}
+
+ENV_FIELDS = {
+    "MODE": "mode",
+    "DOMAIN": "cadence_url",
+    "CADENCE_URL": "cadence_url",
+    "USERNAME": "cadence_username",
+    "CADENCE_USERNAME": "cadence_username",
+    "PASSWORD": "cadence_password",
+    "CADENCE_PASSWORD": "cadence_password",
+    "CF_ACCESS_CLIENT_ID": "cf_access_client_id",
+    "CF_ACCESS_CLIENT_SECRET": "cf_access_client_secret",
+    "SPOTIFY_CLIENT_ID": "spotify_client_id",
+    "SPOTIFY_CLIENT_SECRET": "spotify_client_secret",
+    "SPOTIFY_REDIRECT_URI": "spotify_redirect_uri",
+}
+
+
+def normalize_url(raw):
+    """Accept what people actually type. "cadence.example.com" is a URL to a human but not to an HTTP
+    client, so assume https rather than failing with a connection error they can't act on.
+
+    Lives in config, the module with no dependencies of its own, because every entry point needs it:
+    the `.env` reader below, cadence.py, the CLI, and the sign-in window (which is behind
+    `import customtkinter` and must not be what the others have to import to get this).
+    """
+    url = (raw or "").strip().rstrip("/")
+    return "https://" + url if url and "://" not in url else url
 
 # --------------------------------------------------------------------- credentials at rest (DPAPI)
 # These fields are encrypted in the file with Windows CryptProtectData, which keys the ciphertext to
@@ -212,14 +266,17 @@ def config_path():
 
 
 def legacy_paths():
-    """The pre-consolidation files, still read once so an existing install keeps its settings."""
+    """The pre-consolidation files, still read once so an existing install keeps its settings.
+
+    `.env` is NOT in here any more: it is no longer a legacy format to absorb but a live input, read
+    on every load by env_config(). Migrating it would have copied the operator's secrets into a second
+    file they then had to remember to rotate.
+    """
     old = appdata_dir()
     return {
         "config": [os.path.join(data_dir(), "config.json"), os.path.join(old, "config.json")],
         "session": [os.path.join(data_dir(), "cadence_session.json"),
                     os.path.join(old, "cadence_session.json")],
-        "env": [os.path.join(data_dir(), ".env"), os.path.join(app_dir(), ".env"),
-                os.path.join(old, ".env")],
     }
 
 
@@ -233,18 +290,73 @@ def _read_json(path):
 
 
 def _read_env(path):
-    """Minimal KEY=VALUE reader for a legacy .env — no dotenv dependency in the config layer."""
+    """Minimal KEY=VALUE reader — no dotenv dependency in the config layer.
+
+    Deliberately does NOT strip an inline `#` comment: a password is far more likely to contain one
+    than a line is to carry a trailing note, and silently truncating a password produces a login
+    failure nobody can explain. A whole-line `#` is still a comment. A value wrapped in one matching
+    pair of quotes is unwrapped, since that is how people escape trailing spaces.
+    """
     values = {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    values[k.strip()] = v.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                value = value.strip()
+                if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                values[key.strip()] = value
     except OSError:
         pass
     return values
+
+
+def env_path():
+    """The `.env` the app reads, or "" when there is none.
+
+    Where the config already lives first (AppData for an installed copy under Program Files), then
+    beside the app, so a portable copy carries its own. Two places, both of them "next to the app" in
+    the sense the user means; nothing hunts through the home directory.
+    """
+    for base in (data_dir(), app_dir()):
+        candidate = os.path.join(base, ENV_FILENAME)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def env_config():
+    """Whatever the `.env` supplies, translated into config fields. `{}` when there is no file.
+
+    Keys are matched case-insensitively — the file is hand-written, and `CF_Access_Client_Id` and
+    `CF_ACCESS_CLIENT_ID` are obviously the same setting. Empty values are ignored rather than
+    overriding a saved one with nothing, so a key left blank in the template is simply not set.
+    """
+    path = env_path()
+    if not path:
+        return {}
+    raw = {k.upper(): v for k, v in _read_env(path).items()}
+    found = {}
+    for env_key, field in ENV_FIELDS.items():
+        value = raw.get(env_key, "")
+        if value:
+            found[field] = value
+    if found.get("cadence_url"):
+        found["cadence_url"] = normalize_url(found["cadence_url"])
+    if found.get("mode") not in MODES:
+        found.pop("mode", None)
+    # Shortcuts merge instead of replacing: a .env that names ONE of them must leave the other four
+    # at whatever the config file (or the defaults) say, exactly like load_config's own hotkey merge.
+    # Returned under "hotkeys" as a partial dict, which is what makes the caller's merge possible —
+    # returning a complete one here would silently reset the unmentioned four.
+    shortcuts = {action_id: raw[env_key] for env_key, action_id in ENV_HOTKEYS.items()
+                 if raw.get(env_key)}
+    if shortcuts:
+        found["hotkeys"] = shortcuts
+    return found
 
 
 def _migrate():
@@ -261,14 +373,6 @@ def _migrate():
             cookie = _read_json(path).get("session")
             if cookie:
                 merged["cadence_session"] = cookie
-            break
-    for path in paths["env"]:
-        if os.path.isfile(path):
-            env = _read_env(path)
-            if env.get("SPOTIFY_CLIENT_ID"):
-                merged["spotify_client_id"] = env.get("SPOTIFY_CLIENT_ID", "")
-                merged["spotify_client_secret"] = env.get("SPOTIFY_CLIENT_SECRET", "")
-                merged["spotify_redirect_uri"] = env.get("SPOTIFY_REDIRECT_URI", DEFAULT_REDIRECT_URI)
             break
     if merged:
         logging.info("Migrated existing settings into %s", config_path())
@@ -303,6 +407,14 @@ def load_config():
                        **{k: v for k, v in hotkeys.items() if isinstance(v, str)}}}
     for key in SECRET_FIELDS:
         cfg[key] = _decrypt(cfg.get(key, ""))
+    # The .env wins, and it wins LAST: it is the file the operator edits, so a value they just changed
+    # there has to beat whatever an earlier run happened to leave in cadence_config.txt. It also adds
+    # cadence_username/cadence_password, which have no saved counterpart by design.
+    env = env_config()
+    # Shortcuts merge action-by-action for the same reason the block above does: a .env naming one
+    # HOTKEY_* must not blank the other four. `update` would have replaced the whole dict.
+    cfg["hotkeys"].update(env.pop("hotkeys", {}))
+    cfg.update(env)
     if cfg.get("mode") not in MODES:
         cfg["mode"] = DEFAULTS["mode"]
     if plaintext_on_disk:
@@ -323,6 +435,23 @@ def save_config(config):
     tmp_path = path + ".tmp"
     try:
         stored = {k: config.get(k, v) for k, v in DEFAULTS.items()}
+        # A credential the .env supplies stays in the .env. Without this every save would copy it into
+        # cadence_config.txt as well, and rotating a leaked key would mean editing two files — with the
+        # forgotten copy still working, because load_config would keep reading it whenever the operator
+        # emptied the .env line instead of deleting it.
+        # ONE rule, for every kind of setting: what the .env supplies, the .env KEEPS. The config file
+        # stores that field's default instead. Two consequences, both wanted:
+        #   - there is never a second copy of a credential to find and rotate;
+        #   - deleting a line from the .env returns that setting to its default, rather than
+        #     resurrecting whatever value happened to be saved under it before.
+        # `cadence_username` / `cadence_password` need no case here: they are not in DEFAULTS, so
+        # `stored` never had them.
+        for key, value in env_config().items():
+            if key == "hotkeys":
+                stored["hotkeys"] = {**stored["hotkeys"],
+                                     **{action: DEFAULT_HOTKEYS[action] for action in value}}
+            elif key in DEFAULTS:
+                stored[key] = DEFAULTS[key]
         for key in SECRET_FIELDS:
             stored[key] = _encrypt(stored.get(key, ""))
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -365,9 +494,14 @@ def is_configured(cfg):
     files — because this decides whether to throw a setup window (or a setup prompt) at the user on
     launch. Lives here rather than in main.py so the CLI can ask the same question without importing
     a GUI toolkit to do it.
+
+    A saved session is one way to be ready; a `.env` carrying the server and the account is the other,
+    since the app can exchange those for a session with nobody watching. Without that second clause a
+    fully-provisioned `.env` still opened a sign-in window on first launch.
     """
     if cfg["mode"] == "cadence":
-        return bool(cfg.get("cadence_session"))
+        return bool(cfg.get("cadence_session") or (cfg.get("cadence_url")
+                    and cfg.get("cadence_username") and cfg.get("cadence_password")))
     return bool(cfg.get("spotify_client_id"))
 
 
@@ -414,7 +548,10 @@ def demo():
         if os.name == "nt":
             for secret in ("cookie-value", "cf-id", "cf-secret", "sp-id", "sp-secret", "cadence.example"):
                 assert secret not in raw, f"{secret} is sitting in {CONFIG_FILENAME} IN PLAINTEXT"
-            assert raw.count(ENC_PREFIX) == len(SECRET_FIELDS), raw
+            # Every secret that HAS a value is sealed. Counting SECRET_FIELDS instead was wrong from
+            # the day spotify_refresh_token joined them: _encrypt leaves "" as "", so an unset field
+            # contributes no prefix and this failed on a config that was perfectly correct.
+            assert raw.count(ENC_PREFIX) == sum(1 for k in SECRET_FIELDS if cfg.get(k)), raw
         back = load_config()
         assert back["cadence_url"] == "https://cadence.example"
         assert back["cadence_session"] == "cookie-value"
@@ -455,7 +592,7 @@ def demo():
         save_config({**DEFAULTS, "mode": "nonsense"})
         assert load_config()["mode"] == "cadence", "an unknown mode must not be trusted"
 
-    # migration: the old three files land in the new one, untouched afterwards
+    # migration: the old two files land in the new one, untouched afterwards
     with tempfile.TemporaryDirectory() as d:
         app_dir = lambda: d  # noqa: E731
         with open(os.path.join(d, "config.json"), "w") as f:
@@ -463,11 +600,9 @@ def demo():
                        "cf_access_client_id": "old-cf", "hotkeys": {"next_track": "f2"}}, f)
         with open(os.path.join(d, "cadence_session.json"), "w") as f:
             json.dump({"url": "https://old.example", "session": "old-cookie"}, f)
-        with open(os.path.join(d, ".env"), "w") as f:
-            f.write("SPOTIFY_CLIENT_ID=old-id\nSPOTIFY_CLIENT_SECRET=old-secret\n")
         cfg = load_config()
         assert cfg["cadence_url"] == "https://old.example" and cfg["cadence_session"] == "old-cookie"
-        assert cfg["cf_access_client_id"] == "old-cf" and cfg["spotify_client_id"] == "old-id"
+        assert cfg["cf_access_client_id"] == "old-cf"
         assert cfg["hotkeys"]["next_track"] == "f2"
         assert cfg["hotkeys"]["play_pause"] == DEFAULT_HOTKEYS["play_pause"], \
             "migrating one bound hotkey must not drop the defaults for the other four"
@@ -475,6 +610,89 @@ def demo():
         assert not is_configured({**DEFAULTS, "mode": "spotify"})
         save_config(cfg)
         assert os.path.isfile(os.path.join(d, "config.json")), "migration must not delete the old files"
+
+    # ------------------------------------------------------------------ the .env is the source of truth
+    with tempfile.TemporaryDirectory() as d:
+        app_dir = lambda: d  # noqa: E731
+        assert env_path() == "" and env_config() == {}, "no .env is a normal state, not an error"
+
+        with open(os.path.join(d, ENV_FILENAME), "w", encoding="utf-8") as f:
+            f.write("# a comment\n"
+                    "\n"
+                    "DOMAIN=music.example.com\n"                 # bare host: must gain https
+                    "USERNAME=someone\n"
+                    "PASSWORD=p#ss w+rd$with=signs\n"            # '#' is NOT an inline comment here
+                    'SPOTIFY_CLIENT_ID="quoted-id"\n'            # one matching pair is unwrapped
+                    "SPOTIFY_CLIENT_SECRET=\n"                   # blank: ignored, not "set to empty"
+                    "CF_Access_Client_Id=cf-id.access\n"         # the case people actually type
+                    "CF_ACCESS_CLIENT_SECRET=cf-secret\n")
+        cfg = load_config()
+        assert cfg["cadence_url"] == "https://music.example.com"
+        assert cfg["cadence_username"] == "someone"
+        assert cfg["cadence_password"] == "p#ss w+rd$with=signs", cfg["cadence_password"]
+        assert cfg["spotify_client_id"] == "quoted-id"
+        assert cfg["cf_access_client_id"] == "cf-id.access" and cfg["cf_access_client_secret"] == "cf-secret"
+        assert cfg["spotify_client_secret"] == "", "a blank line must not be read as a value"
+        assert is_configured(cfg), "server + account in the .env is enough to run unattended"
+
+        # ...and none of it is copied into cadence_config.txt, encrypted or otherwise. One secret,
+        # one file, one thing to rotate.
+        cfg["cadence_session"] = "earned-cookie"
+        cfg["hotkeys"]["play_pause"] = "f7"
+        save_config(cfg)
+        stored = json.load(open(config_path()))
+        for field in ("cadence_url", "cadence_username", "cadence_password", "spotify_client_id",
+                      "cf_access_client_id", "cf_access_client_secret"):
+            assert not stored.get(field), f"{field} was copied out of the .env into the config file"
+        assert "someone" not in open(config_path()).read()
+        assert stored["cadence_session"] and stored["hotkeys"]["play_pause"] == "f7", \
+            "what the app earns itself still belongs in the config file"
+
+        # the .env still wins on the way back in, and an edit to it takes effect with no re-save
+        assert load_config()["cadence_url"] == "https://music.example.com"
+        with open(os.path.join(d, ENV_FILENAME), "a", encoding="utf-8") as f:
+            f.write("CADENCE_URL=https://moved.example\nMODE=spotify\n")
+        moved = load_config()
+        assert moved["cadence_url"] == "https://moved.example", "CADENCE_URL must beat DOMAIN"
+        assert moved["mode"] == "spotify" and moved["cadence_session"] == "earned-cookie"
+
+        # ...and `mode` obeys the same rule as everything else the .env supplies: not persisted, so
+        # there is no stale second copy sitting in the config file claiming otherwise.
+        save_config(moved)
+        assert json.load(open(config_path()))["mode"] == DEFAULTS["mode"], "an .env mode was persisted"
+        assert load_config()["mode"] == "spotify", "...but the .env still drives it"
+
+    # ------------------------------------------------------------------ shortcuts from the .env
+    with tempfile.TemporaryDirectory() as d:
+        app_dir = lambda: d  # noqa: E731
+        cfg = load_config()
+        cfg["hotkeys"]["next_track"] = "f2"          # a shortcut the CONFIG FILE owns
+        cfg["hotkeys"]["like_unlike"] = "f3"
+        save_config(cfg)
+
+        with open(os.path.join(d, ENV_FILENAME), "w", encoding="utf-8") as f:
+            f.write("HOTKEY_PLAY_PAUSE=ctrl+shift+p\nhotkey_like_unlike=ctrl+shift+k\n")  # case: free
+        back = load_config()
+        assert back["hotkeys"]["play_pause"] == "ctrl+shift+p", "the .env must set a shortcut"
+        assert back["hotkeys"]["like_unlike"] == "ctrl+shift+k", "...and beat the saved one"
+        assert back["hotkeys"]["next_track"] == "f2", "naming one shortcut must not reset the others"
+        assert back["hotkeys"]["show_current"] == DEFAULT_HOTKEYS["show_current"]
+
+        # ...and what the .env owns never lands in the config file, so deleting the line restores the
+        # default rather than resurrecting whatever was last saved under it
+        save_config(back)
+        stored = json.load(open(config_path()))["hotkeys"]
+        assert stored["play_pause"] == DEFAULT_HOTKEYS["play_pause"], stored
+        assert stored["like_unlike"] == DEFAULT_HOTKEYS["like_unlike"], stored
+        assert stored["next_track"] == "f2", "a shortcut the config file owns must survive a save"
+        os.remove(os.path.join(d, ENV_FILENAME))
+        gone = load_config()
+        assert gone["hotkeys"]["play_pause"] == DEFAULT_HOTKEYS["play_pause"]
+        assert gone["hotkeys"]["like_unlike"] == DEFAULT_HOTKEYS["like_unlike"]
+        assert gone["hotkeys"]["next_track"] == "f2"
+
+        # every action has to be reachable from the .env, or one of them is silently unconfigurable
+        assert set(ENV_HOTKEYS.values()) == set(ACTIONS), ENV_HOTKEYS
     app_dir = real_app_dir
     print("config self-check ok")
 

@@ -1,8 +1,14 @@
-# The tray app (main.py) on top of the core. Nothing under cli.py imports any of these, which is what
-# lets the CLI build skip them entirely.
-
--r requirements.txt
+# The tray app (main.py). Nothing in music_agent_cli.py's import graph reaches any of these, which is
+# what lets the CLI build skip them entirely — see requirements-cli.txt, which is empty.
+#
+# Pinned exactly so a build today and a build in a year produce the same app.
+# Needs Python >=3.10,<3.16 (ceiling from PyInstaller).
 
 customtkinter==6.0.0
 pystray==0.19.5
 Pillow==12.3.0
+
+# Global hotkeys for the TRAY app only. The CLI uses winhotkeys.py (Win32 RegisterHotKey) instead;
+# the tray app still needs this one because settings_ui.py RECORDS a combination as you press it,
+# which needs a keyboard hook and is the one thing RegisterHotKey cannot do.
+keyboard==0.13.5

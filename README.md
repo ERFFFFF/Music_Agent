@@ -103,37 +103,166 @@ fields empty.
 hotkey pressed in that window says "Cadence is waking up — try again in a few seconds". (If it was
 asleep, no browser tab was open either, so there was nothing to control regardless.)
 
-## ⌨️ No-GUI mode (`cli.py`)
+## ⌨️ No-GUI mode (`music_agent_cli.py`)
 
 Everything the Settings window does, from a terminal — same `cadence_config.txt`, same two modes, same
-five actions. There is no separate configuration to keep in sync: the tray app and the CLI read and
-write the one file.
+actions. There is no separate configuration to keep in sync: the tray app and the CLI read and write
+the one file.
+
+**Start it with no arguments.** It stays running and listens for your hotkeys until Ctrl+C — that is
+what this program *is*, and nothing needs installing first:
 
 ```powershell
-python cli.py setup       # interactive: pick a mode, enter a server, sign in
-python cli.py status      # what's configured and what isn't
-python cli.py now         # what's playing
-python cli.py next        # ...and play / pause / prev / like
-python cli.py hotkeys                          # list them
-python cli.py hotkeys play_pause ctrl+alt+p    # rebind one
-python cli.py hotkeys reset
-python cli.py run         # the hotkey agent itself, headless — Ctrl+C stops it
+python music_agent_cli.py
 ```
 
-`cli.py` imports **no GUI libraries at all**, so a CLI-only machine installs two packages instead of
-five:
+```text
+  ctrl+alt+up            play_pause
+  ctrl+alt+right         next_track
+  ctrl+alt+left          previous_track
+  ctrl+alt+l             like_unlike
+  ctrl+alt+c             show_current
+
+Music Agent running in cadence mode. Ctrl+C to stop.
+Every press prints a line below.
+
+02:04:17  play_pause      ok
+02:04:20  next_track      ok
+02:04:22  previous_track  ok
+02:04:25  like_unlike     Like toggled
+02:04:28  show_current    Memories - DMNDS, LIUUC, Tny  (paused)
+```
+
+**Every press prints a line**, including the actions that have nothing to say — `ok` is the point, so
+a working `next_track` never looks the same as a key that didn't fire. A press that failed prints
+`FAILED` and the reason, on stderr:
+
+```text
+02:11:04  next_track      FAILED  No Cadence tab is open - open Cadence in your browser to control playback.
+```
+
+Leave that window open and the keys work everywhere, in any application. Everything below is *extra* —
+one-shot commands for scripting, or for finding out why something isn't working. Each does one thing
+and exits, so they are **not** a substitute for leaving the agent running:
 
 ```powershell
-pip install -r requirements.txt        # requests + keyboard — enough for cli.py
-pip install -r requirements-gui.txt    # adds customtkinter + pystray + Pillow, for the tray app
+python music_agent_cli.py status      # what's configured, and where each value came from
+python music_agent_cli.py now         # what's playing
+python music_agent_cli.py play        # ...and pause / toggle / next / prev / like
+python music_agent_cli.py devices     # Spotify Connect devices this account can see
+python music_agent_cli.py login       # sign in — normally automatic, from the .env
+python music_agent_cli.py hotkeys                          # list them, and where each came from
+python music_agent_cli.py hotkeys play_pause ctrl+alt+p    # rebind one
+python music_agent_cli.py hotkeys reset
+python music_agent_cli.py run         # the agent again, spelled out — same as no arguments
+python music_agent_cli.py -v          # ...and -v works on anything, agent included
 ```
+
+The working directory doesn't matter — `python D:\path\to\music_agent_cli.py` finds its `.env` and its
+config next to the script, not next to you.
+
+**`play` and `pause` mean what they say**, in both modes: each reads the current state first, so
+running one twice is a no-op rather than the opposite action. `toggle` is the flip, and it's what the
+hotkey binds. **Exit code 1 on failure**, so `music_agent_cli.py play || alert-me` works — the message
+goes to stderr, everything else to stdout.
+
+### Credentials live in `.env`, and only there
+
+Copy [`.env.example`](.env.example) to `.env` beside the app and fill in what your mode needs — server
+address, Cadence account, Cloudflare Access service token, Spotify app keys. The app reads it every run
+and **never writes to it**; nothing from it is copied into `cadence_config.txt`, so rotating a key means
+editing one file. With `USERNAME` and `PASSWORD` set, the CLI signs itself in on first use and no
+command ever prompts.
+
+**The mode and all five shortcuts live there too.** These are every hotkey the app has — `ACTIONS` in
+`config.py` is the single source, and the `.env` key is always `HOTKEY_` + the action id, so a new
+action is configurable the moment it exists. Set any subset; the rest keep what they had.
+
+```ini
+MODE=spotify                            # cadence | spotify
+
+HOTKEY_PLAY_PAUSE=ctrl+alt+up
+HOTKEY_NEXT_TRACK=ctrl+alt+right
+HOTKEY_PREVIOUS_TRACK=ctrl+alt+left
+HOTKEY_LIKE_UNLIKE=ctrl+alt+l
+HOTKEY_SHOW_CURRENT=ctrl+alt+c
+```
+
+**One rule covers all of it: what the `.env` supplies, the `.env` keeps.** The config file stores that
+field's *default* instead, so there is never a second copy to rotate, and deleting a line returns the
+setting to its default rather than resurrecting whatever was last saved under it.
+
+Everything that could edit such a value refuses instead of pretending: `set` and `hotkeys` exit 1 with
+the file to edit, Settings greys out the mode selector and shows `.env` on the affected hotkey rows,
+and the first-run chooser is skipped entirely when `MODE` is pinned. A control that accepts a value and
+silently drops it is worse than one that isn't there.
+
+### The other file: `cadence_config.txt`
+
+It sits next to the app and holds **everything the `.env` doesn't** — the things the app *earns* or you
+choose while using it, not the things you configure:
+
+| Field | What it is | Where it comes from |
+|---|---|---|
+| `cadence_session` | The signed Cadence session cookie | Earned by signing in. Slides on every command, so an agent in use never logs in again |
+| `spotify_refresh_token` | The OAuth token from Spotify's browser consent | Earned once at consent. Spotify may hand back a new one on any refresh; it is re-saved when it does |
+| `mode` | `cadence` or `spotify` | `set mode`, Settings, or `MODE` in the `.env` |
+| `hotkeys` | Only the ones the `.env` does **not** name | `hotkeys <action> <combo>`, or Settings |
+
+The name is historical — it predates Spotify mode living in the same file. It is **not** a second copy
+of your credentials: everything the `.env` supplies is blanked on every write, so there is exactly one
+place to rotate a key. Every credential still in it is encrypted at rest with Windows **DPAPI**, keyed
+to your Windows account — copy it to another PC or user and those fields simply read as empty and you
+sign in once there. `mode` and `hotkeys` stay readable on purpose so a moved copy still looks sane.
+
+It is gitignored, and **safe to delete** — see below.
+
+### Stopping and restarting
+
+Every command is already a fresh process; there is no daemon holding state between them. Restarting
+changes nothing, because everything needed to resume lives on disk. Measured, not assumed:
+
+| You do this | What happens |
+|---|---|
+| Stop and restart `run` | Rebinds all five hotkeys and carries on. No sign-in. |
+| Run any verb, any number of times | Each is a cold start that reuses the saved session |
+| Delete `cadence_config.txt` | **Still works.** Cadence signs back in from `USERNAME`/`PASSWORD`; Spotify re-adopts its refresh token. Only your mode and any config-file-owned hotkey go back to default |
+| Delete `.env` | **Cadence mode breaks** — the server address lived there. The session cookie survives but has nothing to point at. Restore the file, or run `setup` to store the settings in `cadence_config.txt` instead |
+| Reboot / log out | No effect. DPAPI decrypts for the same Windows account |
+| Copy the folder to another PC | Sign in once there — DPAPI won't decrypt someone else's blobs. Your `.env` still works, so that sign-in is automatic |
+
+The one thing that *can* cost you a browser click is deleting `cadence_config.txt` in Spotify mode,
+because the refresh token is earned, not configured — it cannot be re-derived from the `.env`. (On this
+machine it is also still recoverable from the old spotipy cache in `%LOCALAPPDATA%`.)
+
+### Dependencies: none
+
+```powershell
+pip install -r requirements-cli.txt    # empty — the CLI runs on the standard library alone
+pip install -r requirements-gui.txt    # customtkinter + pystray + Pillow + keyboard, for the tray app
+```
+
+`music_agent_cli.py` reaches no third-party package at all. The two it used to need were replaced with
+the thing they were wrapping:
+
+| Was | Now | Why |
+|-----|-----|-----|
+| `requests` | [`httpmin.py`](httpmin.py) | ~140 lines of `urllib.request` in a `requests` shape. Both backends make small JSON calls and nothing else. |
+| `keyboard` | [`winhotkeys.py`](winhotkeys.py) | Win32 `RegisterHotKey` + a message loop, which *is* the OS's global-hotkey mechanism — no low-level keyboard hook, so no administrator rights. |
+
+The tray app still needs `keyboard`, because `settings_ui.py` **records** a combination as you press
+it, and that is the one thing `RegisterHotKey` cannot do.
 
 ### Building the portable exe
 
 ```powershell
 .\build_portable.ps1           # -> dist\MusicAgent_portable.exe   tray app
-.\build_portable.ps1 -Cli      # -> dist\MusicAgent_cli.exe        console app, no GUI libraries
 ```
+
+**The CLI is not built into an exe, on purpose.** It has no dependencies to bundle, so freezing it
+would only add a 10 MB artifact and a rebuild step between every change, to ship an interpreter you
+already have. Run it live — `python music_agent_cli.py <verb>`, edit, run again. Only the tray app
+earns an exe, because it has to start from a shortcut with no console.
 
 ## 🔗 Useful Links
 
@@ -171,24 +300,33 @@ The device is auto-discovered at startup — the agent picks the first available
 ### 1. Install Required Packages
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-cli.txt    # nothing — the CLI is stdlib-only
+pip install -r requirements-gui.txt    # only if you're working on the tray app
 ```
 
 ### 2. Configure
 
-Nothing to create by hand: run the app and it asks (Cadence sign-in, or Spotify Client ID + Secret),
-then writes **`cadence_config.txt`** next to `main.py`. That one file holds the mode, the Cadence URL
-and session, the Cloudflare token, the Spotify keys and the hotkeys — delete it to start clean.
+Copy `.env.example` to `.env` next to `main.py` and fill in your server, account and keys — that file
+is the source of truth for every credential, is read on every run, and is never written to. It is
+gitignored and must never be committed.
 
-A legacy `.env` (or the old `config.json` / `cadence_session.json`) is read once and migrated into it,
-so an existing install keeps its settings. `.env.example` documents that legacy format; a real
-`.env` is gitignored and must never be committed.
+Everything else lands in **`cadence_config.txt`** beside the app: the mode, the hotkeys, the Cadence
+session cookie and the Spotify refresh token. Delete it to start clean; your `.env` survives. The old
+`config.json` / `cadence_session.json` are read once and migrated into it, so an existing install keeps
+its settings.
 
-Self-checks, runnable on any OS:
+You can skip the `.env` entirely and run `python music_agent_cli.py setup` (or just launch the tray
+app) to be asked instead — the answers go into `cadence_config.txt`, encrypted with DPAPI.
+
+Self-checks:
 
 ```bash
-python config.py     # config paths, round-trip, migration, corrupt-file fallback
+python selftest.py   # everything below, plus the cross-module checks. Run this one.
+
+python httpmin.py    # the HTTP shim, against a real loopback server
+python config.py     # config paths, round-trip, .env precedence, corrupt-file fallback
 python cadence.py    # cookie handling + "is this a wall or an answer?" detection
+python winhotkeys.py # combination parsing + real RegisterHotKey clash/cleanup (Windows only)
 python cadence.py https://your-cadence user password    # ...plus a live round trip
 ```
 

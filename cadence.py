@@ -9,8 +9,9 @@ unperformed and the user needs to hear about it rather than watch nothing happen
 No Spotify credentials, no OAuth, no Spotify Connect device — which is the whole point: this mode works
 on a locked-down network where Spotify itself is blocked but Cadence (plain HTTPS) is not.
 
-Cross-platform on purpose: only `requests` is used here, so this module can be exercised off Windows
-(the hotkey/tray layer in main.py is the Windows-only part).
+Cross-platform on purpose: nothing here is Windows-specific and nothing here is a third-party package
+(httpmin is stdlib `urllib` wearing a `requests` shape), so this module can be exercised off Windows —
+the hotkey/tray layer in main.py is the Windows-only part.
 """
 
 import logging
@@ -18,7 +19,8 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-import requests
+import httpmin
+from config import normalize_url                        # noqa: F401 — re-exported; login_ui imports it
 
 # Every command the Cadence backend accepts (backend/main.py `_REMOTE_CMDS`). Anything else is a typo,
 # and failing here beats a 422 from the server.
@@ -29,18 +31,6 @@ TIMEOUT = 25  # Cadence scales to zero when idle (Sablier); the call that wakes 
 
 class CadenceError(Exception):
     """Anything the user needs to see: bad credentials, unreachable server, blocked at the edge."""
-
-
-def normalize_url(raw):
-    """Accept what people actually type. "cadence.example.com" is a URL to a human but not to requests,
-    so assume https rather than failing with a connection error they can't act on.
-
-    Lives here, not in the sign-in window, because every entry point needs it and login_ui.py is behind
-    `import customtkinter` — the CLI and the self-checks would otherwise get stricter URL handling than
-    the GUI for no reason.
-    """
-    url = (raw or "").strip().rstrip("/")
-    return "https://" + url if url and "://" not in url else url
 
 
 def _blocked_by_access(response):
@@ -55,10 +45,10 @@ def _blocked_by_access(response):
 class CadenceClient:
     """One logged-in Cadence session. Persists the session cookie so the app logs in once, not daily.
 
-    Thread-safety: hotkeys fire on the keyboard thread, one at a time in practice. `requests.Session`
-    is not formally thread-safe, but each call here is a single short request with no shared mutable
-    state beyond the cookie jar — good enough for a hotkey agent, and the alternative (a lock around
-    every key press) would only serialize what is already serial.
+    Thread-safety: hotkeys fire on the keyboard thread, one at a time in practice. Each call here is
+    a single short request whose only shared mutable state is the cookie jar, which http.cookiejar
+    locks internally — good enough for a hotkey agent, and the alternative (a lock around every key
+    press) would only serialize what is already serial.
     """
 
     def __init__(self, base_url="", session=None, on_session=None,
@@ -69,7 +59,7 @@ class CadenceClient:
         self.base_url = normalize_url(base_url)
         self.on_session = on_session
         self._saved = session or ""
-        self.session = requests.Session()
+        self.session = httpmin.Session()
         # Cadence's /login refuses a request carrying NEITHER Origin nor Referer — that check exists to
         # stop a browser being forced to log into someone else's account cross-site, and a native client
         # simply has to state which origin it is talking to. Sending our own base URL is exactly that;
@@ -146,14 +136,21 @@ class CadenceClient:
         url = f"{self.base_url}/api{path}"
         try:
             r = self.session.request(method, url, timeout=TIMEOUT, **kw)
-        except requests.RequestException as e:
+        except httpmin.RequestError as e:
             raise CadenceError(f"Can't reach Cadence at {self.base_url}: {e}") from e
-        # A 302 to the Access login page, which requests follows into a 200 of HTML — see
+        # A 302 to the Access login page, which the client follows into a 200 of HTML — see
         # _blocked_by_access, which catches it whether or not redirects were followed.
         if _blocked_by_access(r):
+            # ASCII ">" rather than an arrow, and no "paste it below": this sentence reaches a
+            # console as often as a dialog now. The arrow is U+2192, which cp1252 and cp437 cannot
+            # encode at all — print() raised UnicodeEncodeError and the person who most needed to
+            # read this got a traceback instead. music_agent_cli also guards stdout, but a message
+            # that only survives because of a guard is one edit away from breaking again.
             raise CadenceError(
-                "Blocked by Cloudflare Access. Create a service token (Zero Trust → Access → Service "
-                "Auth), allow it on the Cadence application's policy, and paste it below."
+                "Blocked by Cloudflare Access. Create a service token (Zero Trust > Access > Service "
+                "Auth), allow it on the Cadence application's policy, and give it to Music Agent "
+                "(CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET in your .env, or the gear icon in the "
+                "sign-in window)."
             )
         if r.status_code == 401:
             raise CadenceError("Cadence session expired — sign in again.")
@@ -259,20 +256,58 @@ class CadenceController:
 
     def __init__(self, client):
         self.client = client
+        # Set by an action that failed, cleared by the next one that runs. Every method here returns
+        # TEXT rather than raising, which is right for a hotkey and leaves a *script* unable to tell
+        # "Like toggled" from "Cadence session expired" — both are just a string. The CLI reads this
+        # to choose an exit code, so `music_agent_cli.py play || alert-me` actually fires.
+        self.last_error = None
+
+    def _fail(self, message):
+        self.last_error = message
+        return message
 
     def _send(self, cmd, ok_message=None):
+        self.last_error = None
         try:
             live = self.client.command(cmd)
         except CadenceError as e:
             logging.error(f"Cadence {cmd} failed: {e}")
-            return str(e)
+            return self._fail(str(e))
         if not live:
-            # Queued but nothing is there to perform it. Saying so beats a key that does nothing.
-            return "No Cadence tab is open — open Cadence in your browser to control playback."
+            # Queued but nothing is there to perform it. Saying so beats a key that does nothing —
+            # and it is a failure, not a quiet success: the command WILL expire unperformed.
+            return self._fail("No Cadence tab is open — open Cadence in your browser to control playback.")
         logging.info(f"Cadence command sent: {cmd}")
         return ok_message
 
     def play_pause(self):
+        return self._send("play_pause")
+
+    def pause(self):
+        return self._to_paused(True)
+
+    def resume(self):
+        return self._to_paused(False)
+
+    def _to_paused(self, want_paused):
+        """A real pause / resume, built out of the only intent Cadence has.
+
+        The browser tab owns the <audio> element, and the remote vocabulary it drains is a TOGGLE
+        (`play_pause`) — there is no separate pause command to send. Reading the state first is what
+        turns that toggle into a command that means what its name says; without it `pause` starts the
+        music whenever it is run twice, which is the sort of thing a hotkey user forgives and a script
+        does not.
+        """
+        self.last_error = None
+        try:
+            state = self.client.state()
+        except CadenceError as e:
+            logging.error(f"Cadence state failed: {e}")
+            return self._fail(str(e))
+        if not (state.get("track") or {}).get("name"):
+            return "Nothing playing right now."
+        if bool(state.get("paused")) == want_paused:
+            return None                      # already there — sending the toggle would undo it
         return self._send("play_pause")
 
     def next_track(self):
@@ -288,11 +323,12 @@ class CadenceController:
         return self._send("like", "Like toggled")
 
     def show_current(self):
+        self.last_error = None
         try:
             return self.client.now_playing_text() or "Nothing playing right now."
         except CadenceError as e:
             logging.error(f"Cadence state failed: {e}")
-            return str(e)
+            return self._fail(str(e))
 
 
 def selftest():
@@ -314,8 +350,9 @@ def selftest():
     assert CadenceClient(base_url="cadence.example.com").base_url == "https://cadence.example.com"
 
     # Regression: a restored session plus the server's own re-issued one must never leave TWO cookies
-    # named `session` in the jar — requests' cookies.get() raises CookieConflictError on that, which
-    # killed every hotkey on the second launch until _load_cookie started setting the domain.
+    # named `session` in the jar — the second one then shadows whichever the client sends first and
+    # the app presents a stale session forever. Setting the domain is what makes the server's cookie
+    # REPLACE the restored one (the jar keys on domain+path+name).
     c = CadenceClient(base_url="https://cadence.example", session="restored-cookie")
     assert c._cookie() == "restored-cookie"
     c.session.cookies.set("session", "server-issued", domain="cadence.example", path="/")
@@ -336,6 +373,37 @@ def selftest():
         assert "No Cadence server set" in str(e), e
     blank._load_cookie()   # must not litter the jar with a domain-less cookie either
     assert len(blank.session.cookies) == 0
+
+    # pause/resume are a toggle plus a state read, so the read is the whole feature: a `pause` that
+    # fires play_pause at an already-paused player starts the music instead of stopping it.
+    class FakeClient:
+        def __init__(self, paused, track=True):
+            self.state_value = {"track": {"name": "Song"} if track else None, "paused": paused}
+            self.sent = []
+
+        def state(self):
+            return self.state_value
+
+        def command(self, cmd):
+            self.sent.append(cmd)
+            return True
+
+    # ...and an action that failed has to SAY so in a way a script can read, not only in its text
+    dead = FakeClient(paused=False)
+    dead.command = lambda cmd: False                       # queued, but no tab drained it
+    controller = CadenceController(dead)
+    assert "No Cadence tab" in controller.play_pause() and controller.last_error
+    controller.client = FakeClient(paused=False)
+    assert controller.play_pause() is None and controller.last_error is None, "a success must clear it"
+
+    playing, paused = FakeClient(paused=False), FakeClient(paused=True)
+    assert CadenceController(playing).pause() is None and playing.sent == ["play_pause"]
+    assert CadenceController(paused).pause() is None and paused.sent == [], "already paused: send nothing"
+    playing.sent.clear(); paused.sent.clear()
+    assert CadenceController(paused).resume() is None and paused.sent == ["play_pause"]
+    assert CadenceController(playing).resume() is None and playing.sent == []
+    silent = FakeClient(paused=True, track=False)
+    assert "Nothing playing" in CadenceController(silent).pause() and silent.sent == []
 
     saved = []
     c2 = CadenceClient(base_url="https://cadence.example", on_session=saved.append)

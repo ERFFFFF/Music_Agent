@@ -1,13 +1,13 @@
 """Spotify mode: drive this machine's Spotify Connect device through the Web API.
 
-Ten REST calls and one OAuth exchange, written out with `requests` instead of pulling in `spotipy` —
-which listed **redis** as a hard dependency and got bundled into the exe for it. `requests` was already
-here for cadence.py, so this file costs the project nothing new.
+A dozen REST calls and one OAuth exchange, written out by hand instead of pulling in `spotipy` —
+which listed **redis** as a hard dependency and got bundled into the exe for it. The HTTP underneath is
+httpmin, this project's stdlib `urllib` shim, so this file costs the project no package at all.
 
 Same shape as cadence.py on purpose: a client whose `_api` turns every failure into one CadenceError-
 style exception carrying the sentence to show the user, and a Controller exposing the same five actions
-main.py and cli.py bind hotkeys to. Errors come back as a *message*, never an exception, because these
-run on the hotkey thread where an uncaught exception is a silently dead key.
+main.py and music_agent_cli.py bind hotkeys to. Errors come back as a *message*, never an exception,
+because these run on the hotkey thread where an uncaught exception is a silently dead key.
 
 The refresh token lives in cadence_config.txt with everything else (config.DEFAULTS); the access token
 is 1h and stays in memory.
@@ -25,7 +25,7 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import requests
+import httpmin
 
 API = "https://api.spotify.com/v1"
 ACCOUNTS = "https://accounts.spotify.com"
@@ -51,6 +51,22 @@ class SpotifyError(Exception):
 
 class _GrantRejected(SpotifyError):
     """The refresh token is dead. Internal: `token()` recovers from it by re-running consent."""
+
+
+def _error_message(response):
+    """Spotify's own words for a failure: `{"error": {"status": .., "message": ".."}}`, or "".
+
+    Never raises — an error body that isn't the documented shape (or isn't JSON at all) has to fall
+    back to the generic sentence, not replace one failure with a different one.
+    """
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        return str(error.get("message") or "")
+    return str(error or "") if isinstance(error, str) else ""
 
 
 # ------------------------------------------------------------------------------------ authorisation
@@ -82,18 +98,20 @@ class _Auth:
 
     def _post(self, data):
         try:
-            r = requests.post(f"{ACCOUNTS}/api/token", data=data,
-                              headers={"Authorization": self._basic(),
-                                       "Content-Type": "application/x-www-form-urlencoded"},
-                              timeout=TIMEOUT)
-        except requests.RequestException as e:
+            r = httpmin.post(f"{ACCOUNTS}/api/token", data=data,
+                             headers={"Authorization": self._basic(),
+                                      "Content-Type": "application/x-www-form-urlencoded"},
+                             timeout=TIMEOUT)
+        except httpmin.RequestError as e:
             raise SpotifyError(f"Can't reach Spotify: {e}") from e
         payload = r.json() if r.content else {}
         if payload.get("error") == "invalid_grant":
             raise _GrantRejected(payload.get("error_description") or "The Spotify sign-in has expired.")
         if r.status_code >= 400:
+            # No "…in Settings": the CLI has none, and both front ends now read these from a .env.
+            # Name the SETTING, and let the caller say where its copy of it lives.
             raise SpotifyError(f"Spotify rejected the sign-in ({payload.get('error', r.status_code)}). "
-                               "Check the Client ID and Secret in Settings.")
+                               "Check the Spotify Client ID and Client Secret.")
         self._access = payload["access_token"]
         # 60s of slack: a token that expires mid-request would surface as a mystery 401.
         self._expires_at = time.time() + int(payload.get("expires_in", 3600)) - 60
@@ -214,8 +232,11 @@ class SpotifyController:
     def __init__(self, cfg, on_token=None):
         if not (cfg.get("spotify_client_id") and cfg.get("spotify_client_secret")):
             raise SpotifyConfigError(
-                "Spotify mode needs a Client ID and Client Secret. Enter them in Settings, or switch "
-                "to Cadence mode if you don't have a Spotify app.")
+                "Spotify mode needs a Client ID and Client Secret, or switch to Cadence mode if you "
+                "don't have a Spotify app.")
+        # See CadenceController.last_error: every action returns text rather than raising, which a
+        # hotkey wants and a script cannot read. This is how the CLI picks its exit code.
+        self.last_error = None
         self.auth = _Auth(cfg["spotify_client_id"], cfg["spotify_client_secret"],
                           cfg.get("spotify_redirect_uri") or "http://127.0.0.1:8888/callback",
                           cfg.get("spotify_refresh_token", ""), on_token)
@@ -226,10 +247,10 @@ class SpotifyController:
         """One request, with every failure turned into a sentence worth showing."""
         for attempt in (1, 2):
             try:
-                r = requests.request(method, API + path, timeout=TIMEOUT,
-                                     headers={"Authorization": f"Bearer {self.auth.token(force=attempt == 2)}"},
-                                     **kw)
-            except requests.RequestException as e:
+                r = httpmin.request(method, API + path, timeout=TIMEOUT,
+                                    headers={"Authorization": f"Bearer {self.auth.token(force=attempt == 2)}"},
+                                    **kw)
+            except httpmin.RequestError as e:
                 raise SpotifyError(f"Can't reach Spotify: {e}") from e
             if r.status_code != 401 or attempt == 2:
                 break
@@ -237,8 +258,15 @@ class SpotifyController:
             # refresh, then believe it.
 
         if r.status_code == 401:
-            raise SpotifyError("Spotify sign-in expired — re-authorise from Settings.")
+            raise SpotifyError("Spotify sign-in expired — sign in again: `login`, or Settings.")
         if r.status_code == 403:
+            # NOT always Premium, and saying so to a Premium subscriber is unactionable nonsense.
+            # Measured against a live account: skipping on a device whose context has no next track
+            # answers 403 `Player command failed: Restriction violated`. Same status, different fix —
+            # so relay what Spotify said and keep the Premium sentence for when it means it.
+            detail = _error_message(r)
+            if detail and "premium" not in detail.lower():
+                raise SpotifyError(f"Spotify refused that: {detail}.")
             raise SpotifyError("Spotify refused the request — controlling playback needs Premium.")
         if r.status_code == 404:
             self.device_id = None      # whatever we had is gone; rediscover on the next press
@@ -248,15 +276,25 @@ class SpotifyController:
                                f"{r.headers.get('Retry-After', 'a few')}s.")
         if r.status_code >= 400:
             raise SpotifyError(f"Spotify error {r.status_code}.")
-        # The empty-body rule, and it is not just about 204. play/pause/next/previous answer 204; a GET
-        # of the player answers 204 when nothing is playing; and /me/library save+remove answer **200
-        # with an empty body**. Test the body, not the status, or .json() raises on a success.
+        # A SUCCESS FROM THIS API IS NOT RELIABLY JSON, and the status code does not tell you.
+        # Measured, all of them successes: play/pause/next/previous answer 204 empty; GET /me/player
+        # answers 204 empty when nothing is playing; /me/library save+remove answer 200 with an empty
+        # body; and **PUT /me/player/play and /pause answer 200 with an opaque 27-character token and
+        # no Content-Type header at all** (undocumented — `A3_PtwniwTUebcLjlJgM73TGjkU`). Testing the
+        # status alone crashes on the third case, testing the body alone crashes on the fourth: the
+        # command had worked, and the app reported "Spotify sent something unexpected".
+        #
+        # So: anything that doesn't parse is not data. Every caller either ignores a write's result or
+        # reads a documented shape out of a GET, and a real failure was a status above, not this.
         if r.status_code == 204 or not r.content:
             return {}
-        return r.json()
+        try:
+            return r.json()
+        except ValueError:
+            return {}
 
     def devices(self):
-        """Every Spotify Connect device this account can see. Public because `cli.py devices` is the
+        """Every Spotify Connect device this account can see. Public because `... devices` is the
         'why won't it play' command, and it used to be a whole 48-line script with its own dependency."""
         return self._api("GET", "/me/player/devices").get("devices", [])
 
@@ -283,38 +321,60 @@ class SpotifyController:
 
     def _act(self, call):
         """Run one action and return TEXT, never raise. Mirrors CadenceController's `_send`, so main.py
-        and cli.py can treat the two backends identically.
+        and music_agent_cli.py can treat the two backends identically.
 
         The bare `except Exception` is deliberate and is the whole point of this method: these run on
         the keyboard thread, where anything that escapes kills that hotkey silently and permanently.
         A malformed response is the realistic case — `toggle_like` indexes into what Spotify sends, so
         an unexpected shape lands here as a KeyError rather than a SpotifyError.
         """
+        self.last_error = None
         try:
             return call()
         except (SpotifyError, SpotifyConfigError) as e:
             logging.error("Spotify action failed: %s", e)
-            return str(e)
+            return self._fail(str(e))
         except Exception as e:  # noqa: BLE001 — see above
             logging.error("Spotify action crashed: %s", e, exc_info=True)
-            return "Spotify sent something unexpected — see the log."
+            return self._fail("Spotify sent something unexpected — see the log.")
+
+    def _fail(self, message):
+        self.last_error = message
+        return message
 
     # ---------------------------------------------------------------- the five actions
     def play_pause(self):
-        # The one action that has to read before it writes — a toggle can't know which way to go
-        # otherwise. Spotify documents that ordering between Player calls is not guaranteed, so don't
-        # add a confirming read after the write: mashing the key would report the wrong state.
-        def go():
-            state = self._api("GET", "/me/player")
-            device = state.get("device", {}).get("id") or self._device()
-            if not device:
-                return "No Spotify device found — start Spotify somewhere first."
-            playing = bool(state.get("is_playing"))
-            self._api("PUT", "/me/player/pause" if playing else "/me/player/play",
-                      params={"device_id": device})
-            logging.info("Paused playback." if playing else "Started playback.")
+        return self._act(lambda: self._transport(None))
+
+    def pause(self):
+        return self._act(lambda: self._transport(False))
+
+    def resume(self):
+        return self._act(lambda: self._transport(True))
+
+    def _transport(self, want_playing):
+        """Reach a play state; `None` means toggle (what the hotkey binds).
+
+        Reading before writing is unavoidable for a toggle, and it is what makes `pause` and `resume`
+        idempotent as well: Spotify answers **403 Restriction violated** when you pause an already-
+        paused player, and _api turns any 403 into "controlling playback needs Premium" — an alarming
+        and completely wrong sentence to show someone who pressed pause twice.
+
+        Spotify documents that ordering between Player calls is not guaranteed, so there is
+        deliberately no confirming read AFTER the write: mashing the key would report the wrong state.
+        """
+        state = self._api("GET", "/me/player")
+        device = (state.get("device") or {}).get("id") or self._device()
+        if not device:
+            return self._fail("No Spotify device found — start Spotify somewhere first.")
+        playing = bool(state.get("is_playing"))
+        target = (not playing) if want_playing is None else want_playing
+        if target == playing:
             return None
-        return self._act(go)
+        self._api("PUT", "/me/player/play" if target else "/me/player/pause",
+                  params={"device_id": device})
+        logging.info("Started playback." if target else "Paused playback.")
+        return None
 
     def next_track(self):
         return self._act(lambda: self._skip("next", "Skipped to next track."))
@@ -325,7 +385,7 @@ class SpotifyController:
     def _skip(self, direction, logged):
         device = self._device()
         if not device:
-            return "No Spotify device found — start Spotify somewhere first."
+            return self._fail("No Spotify device found — start Spotify somewhere first.")
         self._api("POST", f"/me/player/{direction}", params={"device_id": device})
         logging.info(logged)
         return None
@@ -337,8 +397,8 @@ class SpotifyController:
             if not track:
                 return "Nothing playing right now."
             # /me/library, not the deprecated /me/tracks — and it takes full `spotify:track:` URIs in
-            # a query param, not bare ids. requests percent-encodes the colons, which is what the docs
-            # show. Save/remove answer 200 with an EMPTY body (not 204); _api's guard covers both.
+            # a query param, not bare ids. urlencode percent-encodes the colons, which is what the
+            # docs show. Save/remove answer 200 with an EMPTY body (not 204); _api's guard covers both.
             uri = f"spotify:track:{track}"
             liked = self._api("GET", "/me/library/contains", params={"uris": uri})[0]
             self._api("DELETE" if liked else "PUT", "/me/library", params={"uris": uri})
@@ -354,7 +414,10 @@ class SpotifyController:
                 return "Nothing playing right now."
             artists = ", ".join(a["name"] for a in item.get("artists", []))
             logging.info("Displayed current song: %s by %s", item["name"], artists)
-            return f"{item['name']} — {artists}"
+            # The paused marker matters more here than it looks: `pause` and `resume` print nothing on
+            # success, so `now` is the only way to see which state you are in — and CadenceController
+            # already reports it, so without this the same command answered differently per mode.
+            return f"{item['name']} — {artists}" + ("" if playback.get("is_playing") else "  (paused)")
         return self._act(go)
 
 
@@ -375,7 +438,7 @@ def _legacy_refresh_token():
 
 def controller_from_config(cfg):
     """A controller wired to the saved settings, persisting any refreshed token back into the same
-    config file. The one construction path — main.py and cli.py both use it."""
+    config file. The one construction path — main.py and music_agent_cli.py both use it."""
     from config import update_config
 
     if not cfg.get("spotify_refresh_token"):
@@ -410,26 +473,60 @@ def selftest():
         return SimpleNamespace(status_code=status, content=body, headers=headers or {},
                                json=lambda: json_value)
 
+    def _Real(status, body=b"", headers=None):
+        """A REAL httpmin.Response, so .json() parses — or raises — exactly as it does in production.
+        The stand-in above hands back a pre-decided value, which is fine for shape checks and useless
+        for the cases below, where the whole question is what a malformed body does."""
+        import email.message
+        message = email.message.Message()
+        for key, value in (headers or {}).items():
+            message[key] = value
+        return httpmin.Response(status, body, message, API + "/x")
+
     c = SpotifyController(cfg)
     c.auth._access, c.auth._expires_at = "tok", time.time() + 999
 
     # 204 with an empty body is the success case for every playback command — .json() would raise
-    with mock.patch("requests.request", return_value=response(204)):
+    with mock.patch("httpmin.request", return_value=response(204)):
         assert c._api("PUT", "/me/player/pause") == {}
     # ...and so is 200 with an empty body, which is what /me/library save+remove actually answer.
     # Testing the status alone instead of the body is the easiest way to crash this file.
-    with mock.patch("requests.request",
+    with mock.patch("httpmin.request",
                     return_value=response(200, b"", json_value=AssertionError)) as m:
         assert c._api("PUT", "/me/library", params={"uris": "spotify:track:x"}) == {}
         assert m.call_args.kwargs["params"] == {"uris": "spotify:track:x"}, "library takes URIs, not ids"
     # ...and a 200 with a body still parses
-    with mock.patch("requests.request", return_value=response(200, b"{}", {"is_playing": True})):
+    with mock.patch("httpmin.request", return_value=response(200, b"{}", {"is_playing": True})):
         assert c._api("GET", "/me/player") == {"is_playing": True}
+
+    # ...and neither does a 200 carrying something that ISN'T JSON. Measured: PUT /me/player/play and
+    # /pause answer 200 with an opaque token and no Content-Type. The command SUCCEEDED; treating an
+    # unparseable body as a crash reported "Spotify sent something unexpected" at a working pause.
+    with mock.patch("httpmin.request", return_value=_Real(200, b"A3_PtwniwTUebcLjlJgM73TGjkU")):
+        assert c._api("PUT", "/me/player/pause") == {}
+
+    # A 403 is not always Premium. "Restriction violated" is what a skip gets when the current
+    # context has nowhere to skip to — telling a Premium subscriber to buy Premium helps nobody.
+    with mock.patch("httpmin.request", return_value=_Real(
+            403, b'{"error":{"status":403,"message":"Player command failed: Restriction violated"}}')):
+        try:
+            c._api("POST", "/me/player/next")
+            raise AssertionError("403 must raise")
+        except SpotifyError as e:
+            assert "Restriction violated" in str(e) and "Premium" not in str(e), str(e)
+    # ...but a real Premium refusal still says so, and so does a 403 with no usable body
+    for body in (b'{"error":{"status":403,"message":"Player command failed: Premium required"}}', b"", b"<html>"):
+        with mock.patch("httpmin.request", return_value=_Real(403, body)):
+            try:
+                c._api("POST", "/me/player/next")
+                raise AssertionError("403 must raise")
+            except SpotifyError as e:
+                assert "Premium" in str(e), (body, str(e))
 
     for status, expected, headers in ((403, "Premium", None), (404, "No active Spotify device", None),
                                       (429, "rate-limiting", {"Retry-After": "7"}),
                                       (500, "Spotify error 500", None)):
-        with mock.patch("requests.request", return_value=response(status, headers=headers)):
+        with mock.patch("httpmin.request", return_value=response(status, headers=headers)):
             try:
                 c._api("GET", "/me/player")
                 raise AssertionError(f"{status} must raise")
@@ -437,9 +534,21 @@ def selftest():
                 assert expected in str(e), (status, str(e))
     assert c.device_id is None, "a 404 must forget the cached device so the next press rediscovers"
 
-    # an action never raises at the caller — it returns the sentence to show
-    with mock.patch("requests.request", return_value=response(403)):
-        assert "Premium" in c.show_current()
+    # an action never raises at the caller — it returns the sentence to show, and records that it
+    # was a failure so a script can act on it (the text alone is indistinguishable from a track name)
+    with mock.patch("httpmin.request", return_value=response(403)):
+        assert "Premium" in c.show_current() and c.last_error
+    with mock.patch("httpmin.request", return_value=response(
+            200, b"{}", {"is_playing": True, "item": {"id": "T", "name": "Song", "artists": [{"name": "A"}]}})):
+        assert c.show_current() == "Song — A" and c.last_error is None, "a success must clear it"
+    # ...and `now` has to say WHICH state it is in — pause and resume print nothing on success, and
+    # CadenceController.now_playing_text already marks it, so the two modes must agree.
+    with mock.patch("httpmin.request", return_value=response(
+            200, b"{}", {"is_playing": False, "item": {"id": "T", "name": "Song", "artists": []}})):
+        assert c.show_current() == "Song —   (paused)", c.show_current()
+    with mock.patch("httpmin.request", return_value=response(200, b"{}", {"devices": []})):
+        c.device_id = None
+        assert "No Spotify device" in c.next_track() and c.last_error
 
     # ...including when Spotify sends a shape we didn't expect. toggle_like indexes into the response,
     # so an empty body used to escape as KeyError and reach the user as a traceback (cli) or a dead
@@ -448,8 +557,31 @@ def selftest():
         if url.endswith("/me/player"):
             return response(200, b"{}", {"item": {"id": "T1", "name": "S", "artists": []}})
         return response(200, b"")            # contains answers 200 with nothing in it
-    with mock.patch("requests.request", side_effect=malformed):
+    with mock.patch("httpmin.request", side_effect=malformed):
         assert isinstance(c.toggle_like(), str), "a malformed response must become a message"
+
+    # pause/resume must not write when the player is already in the wanted state: Spotify answers a
+    # redundant pause with 403, which _api reports as "needs Premium" — the most alarming possible
+    # wrong answer to someone who pressed pause twice.
+    def player(is_playing):
+        def transport(method, url, **_kw):
+            if url.endswith("/me/player"):
+                return response(200, b"{}", {"is_playing": is_playing,
+                                             "device": {"id": "DEV"}, "item": {"id": "T1"}})
+            writes.append((method, url))
+            return response(204)
+        return transport
+
+    for is_playing, call, expected in ((True, "pause", ["/me/player/pause"]),
+                                       (True, "resume", []),
+                                       (False, "resume", ["/me/player/play"]),
+                                       (False, "pause", []),
+                                       (True, "play_pause", ["/me/player/pause"]),
+                                       (False, "play_pause", ["/me/player/play"])):
+        writes = []
+        with mock.patch("httpmin.request", side_effect=player(is_playing)):
+            assert getattr(c, call)() is None, (call, is_playing)
+        assert [url[len(API):] for _m, url in writes] == expected, (call, is_playing, writes)
 
     # a token still inside its window is reused rather than re-fetched
     with mock.patch.object(_Auth, "_post", side_effect=AssertionError("should not refresh")):
@@ -458,12 +590,12 @@ def selftest():
     # a refresh that returns a new refresh token must persist it
     saved = []
     auth = _Auth("id", "secret", "http://127.0.0.1:8888/callback", "old", saved.append)
-    with mock.patch("requests.post", return_value=response(
+    with mock.patch("httpmin.post", return_value=response(
             200, b"{}", {"access_token": "a", "expires_in": 3600, "refresh_token": "new"})):
         assert auth.token() == "a"
     assert saved == ["new"] and auth.refresh_token == "new"
     # ...and one that omits it must keep the old one rather than blanking it
-    with mock.patch("requests.post", return_value=response(
+    with mock.patch("httpmin.post", return_value=response(
             200, b"{}", {"access_token": "b", "expires_in": 3600})):
         assert auth.token(force=True) == "b"
     assert auth.refresh_token == "new" and saved == ["new"]
@@ -472,7 +604,7 @@ def selftest():
     # upstream, so the next call re-runs consent instead of failing identically forever
     cleared = []
     dead = _Auth("id", "secret", "http://127.0.0.1:8888/callback", "expired", cleared.append)
-    with mock.patch("requests.post", return_value=response(
+    with mock.patch("httpmin.post", return_value=response(
             400, b"{}", {"error": "invalid_grant", "error_description": "Refresh token revoked"})):
         with mock.patch.object(_Auth, "_authorize", return_value="fresh") as consent:
             assert dead.token() == "fresh"
@@ -482,12 +614,12 @@ def selftest():
     # ...but a plain credentials error must NOT clear anything — retrying is the right move there
     kept = []
     auth3 = _Auth("id", "bad-secret", "http://127.0.0.1:8888/callback", "good", kept.append)
-    with mock.patch("requests.post", return_value=response(400, b"{}", {"error": "invalid_client"})):
+    with mock.patch("httpmin.post", return_value=response(400, b"{}", {"error": "invalid_client"})):
         try:
             auth3.token()
             raise AssertionError("a bad client secret must raise")
         except SpotifyError as e:
-            assert "Client ID and Secret" in str(e), str(e)
+            assert "Client ID and Client Secret" in str(e), str(e)
     assert auth3.refresh_token == "good" and kept == []
 
     # a non-loopback redirect URI can never complete the flow — say so before opening a browser

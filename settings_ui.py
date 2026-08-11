@@ -3,7 +3,8 @@ import customtkinter as ctk
 import keyboard
 
 from cadence import client_from_config
-from config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
+from config import (load_config, save_config, find_icon, env_config, env_path, DEFAULT_HOTKEYS,
+                    ENV_HOTKEY_PREFIX, MODES)
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -151,9 +152,12 @@ class SettingsWindow:
             )
             entry.pack(side="left", padx=(10, 10))
 
+            # A shortcut the .env names is owned by the .env: config.save_config writes the DEFAULT
+            # for it, so capturing a new one here would show it in the box and lose it on Save.
+            from_env = action_id in env_config().get("hotkeys", {})
             ctk.CTkButton(
                 row,
-                text="Change",
+                text=".env" if from_env else "Change",
                 width=80,
                 height=34,
                 corner_radius=8,
@@ -161,6 +165,7 @@ class SettingsWindow:
                 hover_color=("gray60", "gray40"),
                 text_color=("gray10", "gray90"),
                 font=ctk.CTkFont(size=13),
+                state="disabled" if from_env else "normal",
                 command=lambda aid=action_id: self._start_capture(aid),
             ).pack(side="left")
 
@@ -225,10 +230,17 @@ class SettingsWindow:
         ctk.CTkLabel(row, text="Controls", font=ctk.CTkFont(size=14), width=160,
                      anchor="w").pack(side="left")
         self.mode_var = ctk.StringVar(master=self.root, value=self.config.get("mode", "cadence"))
-        ctk.CTkOptionMenu(
+        mode_menu = ctk.CTkOptionMenu(
             row, values=list(MODES), variable=self.mode_var, width=200, height=34,
             corner_radius=8, font=ctk.CTkFont(size=13), command=lambda _v: self._refresh_account(),
-        ).pack(side="left", padx=(10, 10))
+        )
+        mode_menu.pack(side="left", padx=(10, 10))
+        # A .env that pins MODE has already answered this. load_config applies it AFTER the saved
+        # config, so leaving the menu live would let someone pick a mode, press Save, and find the app
+        # still in the other one — the same accept-and-silently-drop the CLI refuses outright.
+        self.mode_from_env = "mode" in env_config()
+        if self.mode_from_env:
+            mode_menu.configure(state="disabled")
         self.account_btn = ctk.CTkButton(row, text="Sign in…", width=80, height=34, corner_radius=8,
                                          font=ctk.CTkFont(size=13), command=self._cadence_sign_in)
         self.account_btn.pack(side="left")
@@ -258,7 +270,7 @@ class SettingsWindow:
                 "tab in your browser — keep one open. " +
                 ("Signed in. " if signed_in else "Not signed in yet. ") +
                 ("⚙ Cloudflare Access token set." if has_token else "⚙ No Cloudflare Access token.")
-            ))
+            ) + self._env_suffix())
         else:
             has_env = bool(self.config.get("spotify_client_id"))
             self.account_btn.configure(text="Credentials…", state="normal")
@@ -267,7 +279,13 @@ class SettingsWindow:
                 "Spotify: hotkeys drive this machine's Spotify Connect device, using a Spotify app's "
                 "Client ID and Secret. " +
                 ("Credentials saved." if has_env else "No credentials yet — click Credentials.")
-            ))
+            ) + self._env_suffix())
+
+    def _env_suffix(self):
+        """Say so when a .env is driving this, instead of leaving a greyed-out control unexplained."""
+        if not self.mode_from_env:
+            return ""
+        return f"\n\nMode is set by MODE in {env_path()} — the selector above follows that file."
 
     def _cadence_sign_in(self):
         """The account button: sign in / sign out for Cadence, or the credentials form for Spotify.

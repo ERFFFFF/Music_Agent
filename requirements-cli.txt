@@ -1,0 +1,18 @@
+# music_agent_cli.py — the CLI's dependencies, in full.
+#
+# There are none. This file is empty on purpose, and `pip install -r requirements-cli.txt` is a no-op
+# that exits 0; it exists so a deploy script has something to point at and so the answer to "what does
+# the CLI need?" is a file rather than a claim.
+#
+# Needs Python >=3.10 (nothing here uses anything newer) on Windows 10+ for `run`; every other command
+# is pure stdlib and runs anywhere.
+#
+# What the CLI would otherwise have pulled in, and what replaced it:
+#
+#   requests   ->  httpmin.py     ~140 lines of urllib.request in a requests shape. Both backends make
+#                                 small JSON calls and nothing else.
+#   keyboard   ->  winhotkeys.py  Win32 RegisterHotKey + a message loop, which IS the OS's global
+#                                 hotkey mechanism. No low-level keyboard hook, so no admin rights.
+#
+# The tray app is a different question — it genuinely needs a GUI toolkit. See requirements-gui.txt.
+# PyInstaller is pinned in build_portable.ps1, which is the only thing that uses it.

@@ -63,9 +63,12 @@ def names_resolve():
     """
     known_globals = {"__file__", "__name__", "__doc__"}
     problems = []
-    for name in ("main", "cli", "config", "cadence", "spotify_backend", "login_ui", "settings_ui"):
+    for name in ("main", "music_agent_cli", "config", "cadence", "spotify_backend", "httpmin",
+                 "winhotkeys", "login_ui", "settings_ui"):
         path = os.path.join(HERE, name + ".py")
-        top = symtable.symtable(open(path).read(), path, "exec")
+        # encoding= is not optional: these files are UTF-8 and Windows would otherwise decode them
+        # with cp1252, where this check dies on the first em dash in a comment.
+        top = symtable.symtable(open(path, encoding="utf-8").read(), path, "exec")
         bound = {s.get_name() for s in top.get_symbols()
                  if s.is_assigned() or s.is_imported() or s.is_parameter() or s.is_namespace()}
 
@@ -107,13 +110,17 @@ def cadence_login():
             cfg["cadence_url"] = "cadence.example"        # bare host — must gain https on its own
             config.save_config(cfg)   # every real caller saves before signing in; update_config does
                                       # not resurrect unsaved edits, and must not
-            with mock.patch("requests.Session.request", transport):
+            with mock.patch("httpmin.Session.request", transport):
                 client = cadence.client_from_config(cfg)
                 assert client.base_url == "https://cadence.example", client.base_url
                 assert client.login("bob", "hunter2")["username"] == "bob"
 
-                # the session has to reach DISK, or the next launch asks for the password again
-                assert json.load(open(config.config_path()))["cadence_session"] == "server-cookie"
+                # The session has to reach DISK, or the next launch asks for the password again —
+                # and it has to reach it SEALED. Comparing the raw file to the plaintext cookie could
+                # only ever pass on a machine where DPAPI was unavailable.
+                assert config.load_config()["cadence_session"] == "server-cookie"
+                on_disk = json.load(open(config.config_path()))["cadence_session"]
+                assert on_disk and (os.name != "nt" or on_disk.startswith(config.ENC_PREFIX)), on_disk
                 assert config.is_configured(config.load_config())
 
                 # ...and a fresh process must come back signed in, with exactly one cookie in the jar
@@ -141,7 +148,7 @@ def cadence_login_refused():
             config.app_dir = lambda: d
             cfg = config.load_config()
             cfg["cadence_url"] = "https://cadence.example"
-            with mock.patch("requests.Session.request", lambda *a, **k: reply(401, None, b"")):
+            with mock.patch("httpmin.Session.request", lambda *a, **k: reply(401, None, b"")):
                 try:
                     cadence.client_from_config(cfg).login("bob", "wrong")
                     raise AssertionError("a 401 must raise, not return")
@@ -294,7 +301,7 @@ def spotify_consent(port=8899, wrong_state=False):
 
     token = {"access_token": "AT", "expires_in": 3600, "refresh_token": "RT"}
     with mock.patch("webbrowser.open", browser), \
-         mock.patch("requests.post", return_value=reply(200, token)) as post:
+         mock.patch("httpmin.post", return_value=reply(200, token)) as post:
         if wrong_state:
             try:
                 auth.token()
@@ -317,11 +324,18 @@ def spotify_consent(port=8899, wrong_state=False):
 def main():
     print("module self-checks")
     import cadence
-    import cli
     import config
+    import httpmin
+    import music_agent_cli
     import spotify_backend
-    for name, fn in (("config", config.demo), ("cadence", cadence.selftest),
-                     ("spotify_backend", spotify_backend.selftest), ("cli", cli.selftest)):
+    checks = [("httpmin", httpmin.selftest), ("config", config.demo), ("cadence", cadence.selftest),
+              ("spotify_backend", spotify_backend.selftest), ("cli", music_agent_cli.selftest)]
+    if os.name == "nt":
+        # RegisterHotKey is the whole module; there is nothing to check where it doesn't exist, and
+        # `import ctypes.wintypes` raises off Windows before it could say so.
+        import winhotkeys
+        checks.insert(1, ("winhotkeys", winhotkeys.selftest))
+    for name, fn in checks:
         check(name, fn)
 
     print("\ncross-module")
