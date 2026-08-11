@@ -14,12 +14,15 @@ Format is JSON (readable, and one parser instead of three) holding the whole con
 It replaces the old config.json + cadence_session.json trio, which scattered one app's settings across
 three files and two directories; those are migrated in on first run and then left alone.
 
-**A `.env` beside the app overrides all of it** (see ENV_FIELDS). That is the file an operator owns and
-edits by hand: server address, Cloudflare service token, Cadence account, Spotify app keys. Anything it
-supplies is read fresh on every load and is *never written back* — `save_config` blanks those fields,
-so a secret cannot end up duplicated in cadence_config.txt where it would have to be rotated twice.
-What cadence_config.txt still owns is the things the app itself earns or the user picks in the UI: the
-session cookie, the Spotify refresh token, the mode and the hotkeys.
+**In the CLI — and only the CLI — a `.env` beside the app overrides all of it** (see ENV_FIELDS and
+`use_env`). That is the file an operator owns and edits by hand: server address, Cloudflare service
+token, Cadence account, Spotify app keys. Anything it supplies is read fresh on every load and is
+*never written back* — `save_config` blanks those fields, so a secret cannot end up duplicated in
+cadence_config.txt where it would have to be rotated twice.
+
+**The tray app never reads it.** Portable or installed, the GUI is configured from cadence_config.txt
+and from its own windows: one file, one place, and Settings means what it says. A .env is a headless
+mechanism for a headless front end.
 
 SECURITY: every credential still stored here (session cookie, Cadence URL, Spotify and Cloudflare keys)
 is encrypted at rest with Windows DPAPI — see SECRET_FIELDS below. `mode` and `hotkeys` stay readable
@@ -107,6 +110,27 @@ DEFAULTS = {
 # dict and in memory, so `save_config` (which is built from DEFAULTS) cannot write an account password
 # to disk even by accident. The app stores the SESSION it exchanges them for, never the password.
 ENV_FILENAME = ".env"
+
+# ------------------------------------------------------------------------------ who may read a .env
+# The CLI, and nothing else.
+#
+# The tray app — portable or installed — is configured from cadence_config.txt through its own
+# windows, and a file it never shows you must not be able to overrule what you typed into Settings.
+# That is what a .env did: it silently won, so the greyed-out boxes and the ".env" tags in Settings
+# existed only to explain why the app was ignoring you. Deleting the override deletes all of that.
+#
+# Off by DEFAULT, and `cli.main()` is the one caller that turns it on. Fail closed: a front end
+# added later reads the config file until someone deliberately opts it in, which is the safe way for
+# this to be wrong. Every .env reader in this module goes through `env_path()`, so this one gate
+# covers env_config(), apply_proxy(), save_config()'s "the .env keeps it" rule and all the UI text.
+_env_enabled = False
+
+
+def use_env(enabled=True):
+    """Let this process read a `.env`. Called by the CLI at startup; nothing else calls it."""
+    global _env_enabled
+    _env_enabled = bool(enabled)
+    return _env_enabled
 
 # The shortcuts, one .env key per action: HOTKEY_PLAY_PAUSE=ctrl+alt+up, and so on. Derived from
 # ACTIONS rather than typed out, so adding an action cannot leave it unconfigurable — and so the key
@@ -455,12 +479,15 @@ def _read_env(path):
 
 
 def env_path():
-    """The `.env` the app reads, or "" when there is none.
+    """The `.env` this process reads, or "" when there is none — and there is never one unless
+    `use_env()` was called, which only the CLI does.
 
     Where the config already lives first (AppData for an installed copy under Program Files), then
     beside the app, so a portable copy carries its own. Two places, both of them "next to the app" in
     the sense the user means; nothing hunts through the home directory.
     """
+    if not _env_enabled:
+        return ""
     for base in (data_dir(), app_dir()):
         candidate = os.path.join(base, ENV_FILENAME)
         if os.path.isfile(candidate):

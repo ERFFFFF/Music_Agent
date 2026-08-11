@@ -10,6 +10,9 @@ def test_config():
     """Self-check: paths, round-trip, migration, and that a corrupt file can't stop the app."""
     import tempfile
     real_app_dir = config.app_dir
+    # Reading a .env is opt-in, and everything below the next heading is the CLI's behaviour. The
+    # tray app's side of that promise is checked in test_tray.py, in a fresh process.
+    config.use_env(True)
     with tempfile.TemporaryDirectory() as d:
         config.app_dir = lambda: d
         assert config_path() == os.path.join(d, "cadence_config.txt"), config_path()

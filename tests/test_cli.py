@@ -16,6 +16,8 @@ def test_cli():
     from music_agent import config as config_module
     from music_agent.backends import spotify
 
+    config_module.use_env(True)      # what cli.main() does at startup, and only this front end does
+
     parser = build_parser()
     for verb, _help, _handler in (("status", 0, 0), ("login", 0, 0), ("logout", 0, 0),
                                   ("devices", 0, 0), ("run", 0, 0), ("setup", 0, 0),

@@ -8,6 +8,7 @@ why, until the app is restarted — which is exactly what shipped when the `src/
 Everything it touches is faked: no keyboard, no window, no network. The point is the wiring.
 """
 
+import subprocess
 import sys
 from unittest import mock
 
@@ -43,6 +44,22 @@ def test_reload_config():
         assert tray.controller == "ctl" and built == [False], built
         assert tray.tray_icon.title == "Music Agent (spotify)", tray.tray_icon.title
         assert fake_keyboard.unhook_all_hotkeys.called, "the old bindings have to go first"
+
+
+def test_the_tray_app_never_reads_a_dotenv():
+    """The `.env` is the CLI's mechanism. The tray app — portable or installed — is configured from
+    cadence_config.txt and its own windows, so a file it never shows you must not be able to overrule
+    what you typed into Settings.
+
+    Run in a SUBPROCESS on purpose: `config._env_enabled` is process-global, and test_cli.py turns it
+    on. In this process the check would pass or fail on test ORDER, which is no check at all. A fresh
+    interpreter that imports the tray app is exactly what launching the exe does.
+    """
+    code = ("import music_agent.ui.tray, music_agent.config as c; "
+            "print(repr((c._env_enabled, c.env_path(), c.env_config())))")
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "(False, '', {})", done.stdout
 
 
 def test_reload_config_leaves_an_unchanged_controller_alone():

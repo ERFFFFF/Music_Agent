@@ -8,8 +8,7 @@ from music_agent import log
 from music_agent import config as config_module
 
 from music_agent.backends.cadence import client_from_config
-from music_agent.config import (load_config, save_config, find_icon, env_config, env_path, DEFAULT_HOTKEYS,
-                    ENV_HOTKEY_PREFIX, MODES)
+from music_agent.config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -174,12 +173,9 @@ class SettingsWindow:
             )
             entry.pack(side="left", padx=(10, 10))
 
-            # A shortcut the .env names is owned by the .env: config.save_config writes the DEFAULT
-            # for it, so capturing a new one here would show it in the box and lose it on Save.
-            from_env = action_id in env_config().get("hotkeys", {})
             ctk.CTkButton(
                 row,
-                text=".env" if from_env else "Change",
+                text="Change",
                 width=80,
                 height=34,
                 corner_radius=8,
@@ -187,7 +183,6 @@ class SettingsWindow:
                 hover_color=("gray60", "gray40"),
                 text_color=("gray10", "gray90"),
                 font=ctk.CTkFont(size=13),
-                state="disabled" if from_env else "normal",
                 command=lambda aid=action_id: self._start_capture(aid),
             ).pack(side="left")
 
@@ -329,12 +324,6 @@ class SettingsWindow:
             corner_radius=8, font=ctk.CTkFont(size=13), command=lambda _v: self._refresh_account(),
         )
         mode_menu.pack(side="left", padx=(10, 10))
-        # A .env that pins MODE has already answered this. load_config applies it AFTER the saved
-        # config, so leaving the menu live would let someone pick a mode, press Save, and find the app
-        # still in the other one — the same accept-and-silently-drop the CLI refuses outright.
-        self.mode_from_env = "mode" in env_config()
-        if self.mode_from_env:
-            mode_menu.configure(state="disabled")
         self.account_btn = ctk.CTkButton(row, text="Sign in…", width=80, height=34, corner_radius=8,
                                          font=ctk.CTkFont(size=13), command=self._cadence_sign_in)
         self.account_btn.pack(side="left")
@@ -359,7 +348,6 @@ class SettingsWindow:
         which reads as broken DNS and sends people looking in the wrong place entirely; the hint under
         the boxes is there to shorten that.
         """
-        owned = env_config()
         card = ctk.CTkFrame(parent, corner_radius=12)
         card.pack(fill="x", pady=(0, 16))
 
@@ -386,12 +374,6 @@ class SettingsWindow:
                                  placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "",
                                  show="•" if secret else "")
             entry.pack(side="left", padx=(10, 0))
-            # Same rule as everywhere else: a field the .env owns is shown, not editable, because
-            # save_config would drop whatever was typed here.
-            if field in owned:
-                entry.configure(state="disabled")
-                ctk.CTkLabel(row, text=".env", font=ctk.CTkFont(size=11),
-                             text_color=("gray50", "gray60")).pack(side="left", padx=(8, 0))
 
         row = ctk.CTkFrame(card, fg_color="transparent")
         row.pack(fill="x", padx=20, pady=(6, 14))
@@ -403,8 +385,6 @@ class SettingsWindow:
             variable=self.proxy_auth_var, onvalue="on", offvalue="off",
             font=ctk.CTkFont(size=12), checkbox_width=18, checkbox_height=18)
         check.pack(side="left")
-        if "proxy_auth" in owned:
-            check.configure(state="disabled")
 
     def _refresh_account(self):
         """Say what the selected mode needs and whether it has it. Local checks only (a file exists or
@@ -419,7 +399,7 @@ class SettingsWindow:
                 "tab in your browser — keep one open. " +
                 ("Signed in. " if signed_in else "Not signed in yet. ") +
                 ("⚙ Cloudflare Access token set." if has_token else "⚙ No Cloudflare Access token.")
-            ) + self._env_suffix())
+            ))
         else:
             has_env = bool(self.config.get("spotify_client_id"))
             self.account_btn.configure(text="Credentials…", state="normal")
@@ -428,13 +408,7 @@ class SettingsWindow:
                 "Spotify: hotkeys drive this machine's Spotify Connect device, using a Spotify app's "
                 "Client ID and Secret. " +
                 ("Credentials saved." if has_env else "No credentials yet — click Credentials.")
-            ) + self._env_suffix())
-
-    def _env_suffix(self):
-        """Say so when a .env is driving this, instead of leaving a greyed-out control unexplained."""
-        if not self.mode_from_env:
-            return ""
-        return f"\n\nMode is set by MODE in {env_path()} — the selector above follows that file."
+            ))
 
     def _cadence_sign_in(self):
         """The account button: sign in / sign out for Cadence, or the credentials form for Spotify.

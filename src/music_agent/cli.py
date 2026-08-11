@@ -8,7 +8,9 @@ is the reason this is a separate entry point rather than a --nogui flag on ui/tr
 have paid for the GUI imports at the top of the module.
 
 Credentials come from a `.env` beside the app and stay there — see config.ENV_FIELDS. Nothing in this
-file, and nothing it writes, contains a server address, an account or a key.
+file, and nothing it writes, contains a server address, an account or a key. **The `.env` is this
+front end's alone**: `main()` switches it on with `config.use_env()`, and the tray app never does, so
+what you type into its Settings window is what it uses.
 
     python -m music_agent                          START HERE — stays running, listens for your
                                                        hotkeys until Ctrl+C. Same as `run`.
@@ -465,6 +467,12 @@ def main(argv=None):
             stream.reconfigure(errors="replace")
 
     args = build_parser().parse_args(argv)
+
+    # The `.env` is a CLI mechanism, and this is where it is switched on — see config.use_env. The
+    # tray app is configured from its own windows, so letting an invisible file overrule them only
+    # ever produced "Settings won't save my server address". Here it is the whole point: a headless
+    # agent needs its credentials from somewhere that isn't a dialog box.
+    config.use_env(True)
 
     # Quiet by default. Without a handler, logging's last-resort one prints WARNING and above to
     # stderr — so every backend error appeared TWICE: once as `ERROR:root:...` and once as the

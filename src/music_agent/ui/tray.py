@@ -27,8 +27,8 @@ import pystray
 from PIL import Image
 
 from music_agent import log
-from music_agent.backends.cadence import CadenceError, client_from_config
-from music_agent.config import (ACTIONS, appdata_dir, env_config, find_icon, is_configured, load_config,
+from music_agent.backends.cadence import client_from_config
+from music_agent.config import (ACTIONS, appdata_dir, find_icon, is_configured, load_config,
                     save_config)
 from music_agent.ui import login
 from music_agent.ui.settings import open_settings
@@ -134,9 +134,7 @@ tray_icon = None
 def run_setup(cfg):
     """First run (or a copy that lost its credentials): ask which service, then set it up. Returns the
     chosen mode, or None if the user closed the window."""
-    # A .env that pins MODE has already answered this. load_config applies it AFTER the saved config,
-    # so asking would put up a window whose answer gets overruled on the next launch.
-    mode = env_config().get("mode") or login.choose_mode(cfg)
+    mode = login.choose_mode(cfg)
     if mode is None:
         return None
     cfg["mode"] = mode
@@ -165,20 +163,11 @@ def build_controller(cfg, setup=True):
         client = client_from_config(cfg)
         if not client.is_authenticated():
             # No session, or it expired/was revoked: this is the "login part" on launch. It appears
-            # once per machine — Cadence re-signs the cookie on every call, so it stays valid.
+            # once per machine — Cadence re-signs the cookie on every call, so it stays valid, and
+            # the session is what the config file stores. (There is no .env shortcut past this window
+            # any more: config.use_env is off for the GUI, so the account fields are never populated
+            # and the branch that used them could only ever have been dead code pretending to work.)
             #
-            # But not if the .env already holds the account. The CLI signs itself in from it, and a
-            # tray app that puts a password box in front of someone who wrote their password into a
-            # file specifically to avoid that is the .env not keeping its promise. Measured on the
-            # portable build: a fully-configured .env still opened the sign-in window.
-            if cfg.get("cadence_username") and cfg.get("cadence_password"):
-                try:
-                    client.login(cfg["cadence_username"], cfg["cadence_password"])
-                    return CadenceController(client)
-                except CadenceError as e:
-                    # Fall through to the window rather than dying: a typo in the .env, a sleeping
-                    # server and a revoked account all land here, and the window can fix all three.
-                    logging.warning("Sign-in from the .env failed (%s) — asking instead.", e)
             # Gated on `setup` as well, because is_authenticated() is a live request that also returns
             # False for a sleeping or unreachable server. Without the gate, saving a hotkey while the
             # Cadence stack was scaled to zero threw a full username/password window at someone who

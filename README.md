@@ -168,8 +168,13 @@ goes to stderr, everything else to stdout.
 
 ### Credentials live in `.env`, and only there
 
+> **The `.env` belongs to the CLI.** The tray app — portable or installed — never reads it. That app is
+> configured from its own windows into `cadence_config.txt`, so what you type into Settings is what it
+> uses; a file it never shows you cannot overrule it. If you run both on one machine, each has its own
+> source of truth.
+
 Copy [`.env.example`](.env.example) to `.env` beside the app and fill in what your mode needs — server
-address, Cadence account, Cloudflare Access service token, Spotify app keys. The app reads it every run
+address, Cadence account, Cloudflare Access service token, Spotify app keys. The CLI reads it every run
 and **never writes to it**; nothing from it is copied into `cadence_config.txt`, so rotating a key means
 editing one file. With `USERNAME` and `PASSWORD` set, the CLI signs itself in on first use and no
 command ever prompts.
@@ -249,10 +254,10 @@ default transport stays in use.
 field's *default* instead, so there is never a second copy to rotate, and deleting a line returns the
 setting to its default rather than resurrecting whatever was last saved under it.
 
-Everything that could edit such a value refuses instead of pretending: `set` and `hotkeys` exit 1 with
-the file to edit, Settings greys out the mode selector and shows `.env` on the affected hotkey rows,
-and the first-run chooser is skipped entirely when `MODE` is pinned. A control that accepts a value and
-silently drops it is worse than one that isn't there.
+Every CLI command that could edit such a value refuses instead of pretending: `set` and `hotkeys` exit 1
+naming the file to edit. A control that accepts a value and silently drops it is worse than one that
+isn't there — which is also why the tray app has no `.env` at all rather than a window full of
+greyed-out boxes explaining that a file you can't see has already decided.
 
 ### The other file: `cadence_config.txt`
 
@@ -263,12 +268,12 @@ choose while using it, not the things you configure:
 |---|---|---|
 | `cadence_session` | The signed Cadence session cookie | Earned by signing in. Slides on every command, so an agent in use never logs in again |
 | `spotify_refresh_token` | The OAuth token from Spotify's browser consent | Earned once at consent. Spotify may hand back a new one on any refresh; it is re-saved when it does |
-| `mode` | `cadence` or `spotify` | `set mode`, Settings, or `MODE` in the `.env` |
-| `hotkeys` | Only the ones the `.env` does **not** name | `hotkeys <action> <combo>`, or Settings |
+| `mode` | `cadence` or `spotify` | Settings, `set mode`, or `MODE` in the `.env` (CLI only) |
+| `hotkeys` | In the tray app, all five. In the CLI, the ones the `.env` does **not** name | Settings, or `hotkeys <action> <combo>` |
 
-The name is historical — it predates Spotify mode living in the same file. It is **not** a second copy
-of your credentials: everything the `.env` supplies is blanked on every write, so there is exactly one
-place to rotate a key. Every credential still in it is encrypted at rest with Windows **DPAPI**, keyed
+The name is historical — it predates Spotify mode living in the same file. For the tray app it is the
+*whole* configuration; for the CLI it is **not** a second copy of your credentials, because everything
+the `.env` supplies is blanked on every write, so there is exactly one place to rotate a key. Every credential still in it is encrypted at rest with Windows **DPAPI**, keyed
 to your Windows account — copy it to another PC or user and those fields simply read as empty and you
 sign in once there. `mode` and `hotkeys` stay readable on purpose so a moved copy still looks sane.
 
@@ -284,9 +289,9 @@ changes nothing, because everything needed to resume lives on disk. Measured, no
 | Stop and restart `run` | Rebinds all five hotkeys and carries on. No sign-in. |
 | Run any verb, any number of times | Each is a cold start that reuses the saved session |
 | Delete `cadence_config.txt` | **Still works.** Cadence signs back in from `USERNAME`/`PASSWORD`; Spotify re-adopts its refresh token. Only your mode and any config-file-owned hotkey go back to default |
-| Delete `.env` | **Cadence mode breaks** — the server address lived there. The session cookie survives but has nothing to point at. Restore the file, or run `setup` to store the settings in `cadence_config.txt` instead |
+| Delete `.env` | **The CLI's Cadence mode breaks** — the server address lived there. The session cookie survives but has nothing to point at. Restore the file, or run `setup` to store the settings in `cadence_config.txt` instead. The tray app doesn't notice: it never read it |
 | Reboot / log out | No effect. DPAPI decrypts for the same Windows account |
-| Copy the folder to another PC | Sign in once there — DPAPI won't decrypt someone else's blobs. Your `.env` still works, so that sign-in is automatic |
+| Copy the folder to another PC | Sign in once there — DPAPI won't decrypt someone else's blobs. For the CLI your `.env` still works, so that sign-in is automatic; the tray app asks once, in a window |
 
 The one thing that *can* cost you a browser click is deleting `cadence_config.txt` in Spotify mode,
 because the refresh token is earned, not configured — it cannot be re-derived from the `.env`. (On this
@@ -363,9 +368,10 @@ pip install -e ".[gui]"                # ...add the tray app's toolkit if you're
 
 ### 2. Configure
 
-Copy `.env.example` to `.env` next to `ui/tray.py` and fill in your server, account and keys — that file
-is the source of truth for every credential, is read on every run, and is never written to. It is
-gitignored and must never be committed.
+Copy `.env.example` to `.env` in the project root and fill in your server, account and keys — for **the
+CLI**, that file is the source of truth for every credential, is read on every run, and is never written
+to. It is gitignored and must never be committed. The tray app ignores it entirely (`config.use_env`,
+which only `cli.main()` calls); it is configured through its own windows.
 
 Everything else lands in **`cadence_config.txt`** beside the app: the mode, the hotkeys, the Cadence
 session cookie and the Spotify refresh token. Delete it to start clean; your `.env` survives. The old
