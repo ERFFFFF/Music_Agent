@@ -125,6 +125,40 @@ ENV_FIELDS = {
 }
 
 
+# A corporate proxy is NOT a config field, and deliberately isn't in DEFAULTS: `urllib` reads it from
+# the ENVIRONMENT (and, on Windows, the registry), and every opener httpmin builds already carries the
+# ProxyHandler that does so — including CONNECT tunnelling for https and NO_PROXY bypass. So the whole
+# job here is to bridge one file to another mechanism, not to plumb a value through two backends.
+#
+# This is the case it exists for: on a network with a mandatory proxy the client is not supposed to
+# resolve external names at all — the proxy does — which is why the failure without one is
+# `getaddrinfo failed` (WSA 11001) rather than a timeout, and why it looks like broken DNS.
+ENV_PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+
+
+def apply_env_proxy():
+    """Export the `.env`'s proxy settings into the environment, where urllib will find them.
+
+    `PROXY=` is the friendly form — one address for both schemes. `HTTP_PROXY` / `HTTPS_PROXY` /
+    `NO_PROXY` are passed through untouched for anyone who needs them to differ. Returns what it set,
+    so `status` can show it.
+
+    The `.env` WINS over a variable already in the shell, same as every other setting it supplies —
+    otherwise "what the .env supplies, the .env owns" would have one silent exception. A `.env` with
+    no proxy line sets nothing, so a shell variable still works on its own.
+    """
+    path = env_path()
+    raw = {k.upper(): v for k, v in _read_env(path).items()} if path else {}
+    both = raw.get("PROXY", "")
+    applied = {}
+    for key in ENV_PROXY_KEYS:
+        value = raw.get(key) or (both if key != "NO_PROXY" else "")
+        if value:
+            os.environ[key] = value
+            applied[key] = value
+    return applied
+
+
 def normalize_url(raw):
     """Accept what people actually type. "cadence.example.com" is a URL to a human but not to an HTTP
     client, so assume https rather than failing with a connection error they can't act on.
@@ -415,6 +449,9 @@ def load_config():
     # HOTKEY_* must not blank the other four. `update` would have replaced the whole dict.
     cfg["hotkeys"].update(env.pop("hotkeys", {}))
     cfg.update(env)
+    # Every entry point loads the config before it makes a request, so this is the one place that
+    # guarantees the proxy is in effect for both front ends without either of them knowing about it.
+    apply_env_proxy()
     if cfg.get("mode") not in MODES:
         cfg["mode"] = DEFAULTS["mode"]
     if plaintext_on_disk:
@@ -693,6 +730,38 @@ def demo():
 
         # every action has to be reachable from the .env, or one of them is silently unconfigurable
         assert set(ENV_HOTKEYS.values()) == set(ACTIONS), ENV_HOTKEYS
+
+    # ------------------------------------------------------- proxy, for a network that mandates one
+    with tempfile.TemporaryDirectory() as d:
+        app_dir = lambda: d  # noqa: E731
+        saved = {key: os.environ.get(key) for key in ENV_PROXY_KEYS}
+        try:
+            for key in ENV_PROXY_KEYS:
+                os.environ.pop(key, None)
+            assert apply_env_proxy() == {}, "no .env is a normal state here too"
+
+            with open(os.path.join(d, ENV_FILENAME), "w") as f:
+                f.write("PROXY=http://corp:8080\n")
+            load_config()                       # every entry point goes through this, so it must apply
+            assert os.environ["HTTP_PROXY"] == "http://corp:8080"
+            assert os.environ["HTTPS_PROXY"] == "http://corp:8080", "PROXY has to cover both schemes"
+            assert "NO_PROXY" not in os.environ, "PROXY is an address, not a bypass list"
+
+            # the explicit names beat the shorthand, and NO_PROXY passes through untouched
+            with open(os.path.join(d, ENV_FILENAME), "w") as f:
+                f.write("PROXY=http://both:8080\nHTTPS_PROXY=http://secure:8443\nNO_PROXY=localhost\n")
+            load_config()
+            assert os.environ["HTTPS_PROXY"] == "http://secure:8443"
+            assert os.environ["HTTP_PROXY"] == "http://both:8080"
+            assert os.environ["NO_PROXY"] == "localhost"
+
+            # ...and urllib really reads what was exported. That is the ONLY reason this works: the
+            # proxy is never passed to httpmin, it is picked up by the ProxyHandler in every opener.
+            import urllib.request
+            assert urllib.request.getproxies().get("https") == "http://secure:8443"
+        finally:
+            for key, value in saved.items():
+                os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
     app_dir = real_app_dir
     print("config self-check ok")
 

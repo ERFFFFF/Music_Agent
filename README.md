@@ -188,6 +188,27 @@ HOTKEY_LIKE_UNLIKE=ctrl+alt+l
 HOTKEY_SHOW_CURRENT=ctrl+alt+c
 ```
 
+### Behind a corporate proxy
+
+```ini
+PROXY=http://proxy.corp.example:8080     # or http://user:pass@proxy:8080
+NO_PROXY=localhost,127.0.0.1             # optional, comma-separated
+```
+
+**On a network that mandates a proxy, the failure does not look like a proxy problem.** You get
+`Can't reach … : [Errno 11001] getaddrinfo failed` — a *DNS* error — because the client is not
+supposed to resolve external names there at all; the proxy does it. So "cannot resolve the host"
+usually means "no proxy configured", not "DNS is broken".
+
+Set `HTTP_PROXY` / `HTTPS_PROXY` separately if they must differ. Anything set here beats a variable
+already in your shell. `status` shows which proxy is in effect and where it came from, with any
+password printed as `***`.
+
+Windows proxy *settings* are picked up automatically, so often you need nothing. Two gaps worth
+knowing: a **PAC file** (Automatic configuration script) is not read — open it, find the proxy for
+your host, and put it in `.env` — and proxies requiring **NTLM/Kerberos** are not supported, only
+Basic.
+
 **One rule covers all of it: what the `.env` supplies, the `.env` keeps.** The config file stores that
 field's *default* instead, so there is never a second copy to rotate, and deleting a line returns the
 setting to its default rather than resurrecting whatever was last saved under it.

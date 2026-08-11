@@ -75,6 +75,21 @@ def _env_note():
     return f"Edit {env_path() or config.ENV_FILENAME} to change it."
 
 
+def _redact(url):
+    """`http://user:pass@proxy:8080` -> `http://user:***@proxy:8080`.
+
+    Enterprise proxies routinely carry credentials inline, and `status` is the command people paste
+    into a chat when asking for help. The host has to stay readable — it is the whole point of the
+    line — so only the password goes.
+    """
+    scheme, _, rest = url.rpartition("://")
+    userinfo, at, hostpart = rest.rpartition("@")
+    if not at:
+        return url
+    user = userinfo.partition(":")[0]
+    return f"{scheme}://{user}:***@{hostpart}" if scheme else f"{user}:***@{hostpart}"
+
+
 def _cadence_sign_in(client, cfg, interactive=True):
     """Exchange an account for a session. Uses the `.env` credentials when it has them — that is what
     makes an unattended machine work: drop a .env next to the app and every command below runs without
@@ -181,6 +196,17 @@ def cmd_status(cfg, args):
 
     print(f"Config file : {config_path()}")
     print(f"Secrets file: {env_path() or '(none — using the config file only)'}")
+    # Shown even when unset: on a network with a mandatory proxy the symptom is "cannot resolve the
+    # host", which reads as broken DNS, and the first useful question is whether a proxy is in play.
+    import urllib.request
+
+    proxies = urllib.request.getproxies()
+    from_env = config.apply_env_proxy()
+    if proxies:
+        where = "  (.env)" if from_env else "  (environment / Windows settings)"
+        print(f"Proxy       : {', '.join(f'{k}={_redact(v)}' for k, v in sorted(proxies.items()))}{where}")
+    else:
+        print("Proxy       : none — connecting directly")
     print(f"Mode        : {cfg['mode']}{source('mode')}")
     if cfg["mode"] == "cadence":
         print(f"Server      : {cfg.get('cadence_url') or '(not set)'}{source('cadence_url')}")
