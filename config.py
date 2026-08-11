@@ -150,6 +150,8 @@ ENV_FIELDS = {
 # resolve external names at all — the proxy does — which is why the failure without one is
 # `getaddrinfo failed` (WSA 11001) rather than a timeout, and why it looks like broken DNS.
 ENV_PROXY_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+# What apply_proxy() itself exported last time, so it can clear its own and only its own.
+_exported_proxy_keys = set()
 
 # What `PROXY_AUTH` may say to mean "use the logged-in Windows account". Several spellings because
 # this is typed by hand into a file, once, on a machine where the thing it enables is the difference
@@ -189,6 +191,7 @@ def apply_proxy(cfg):
 
     Returns what it set, for `status` and the Settings window to display.
     """
+    global _exported_proxy_keys
     path = env_path()
     raw = {k.upper(): v for k, v in _read_env(path).items()} if path else {}
     composed = proxy_url(cfg)
@@ -200,10 +203,12 @@ def apply_proxy(cfg):
         if value:
             os.environ[key] = value
             applied[key] = value
-        else:
-            # Clearing matters as much as setting: emptying the proxy in Settings has to actually
-            # stop using it, and a stale variable in this process would quietly keep it alive.
+        elif key in _exported_proxy_keys:
+            # Clear ONLY what a previous call here set. Emptying the proxy in Settings has to really
+            # stop using it — but a variable the user exported in their own shell is not ours to
+            # delete, and doing so broke "no proxy configured, so my shell setting still applies".
             os.environ.pop(key, None)
+    _exported_proxy_keys = set(applied)
 
     # proxy_auth=current-user means "authenticate to the proxy as whoever is logged in", i.e. NTLM or
     # Negotiate over SSPI. urllib cannot do that at all — measured against proxies demanding each, it

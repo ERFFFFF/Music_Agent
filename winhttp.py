@@ -28,7 +28,7 @@ import urllib.parse
 import urllib.request
 from ctypes import wintypes
 
-from httpmin import DEFAULT_TIMEOUT, USER_AGENT, RequestError, Response
+from httpmin import DEFAULT_TIMEOUT, RequestError, Response, USER_AGENT, shape
 
 # ------------------------------------------------------------------------------------- WinHTTP ABI
 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY = 4      # honours WPAD + PAC, which is half the reason for this
@@ -58,7 +58,6 @@ WINHTTP_AUTH_TARGET_PROXY = 1
 WINHTTP_AUTH_SCHEME_NTLM = 0x00000002
 WINHTTP_AUTH_SCHEME_NEGOTIATE = 0x00000010
 
-ERROR_WINHTTP_RESEND_REQUEST = 12032
 MAX_REDIRECTS = 10
 
 _dll = None
@@ -273,19 +272,7 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
     chain to tell a Cloudflare Access wall from a real answer; letting WinHTTP follow them silently
     would erase exactly the evidence that check needs.
     """
-    if params:
-        joiner = "&" if urllib.parse.urlsplit(url).query else "?"
-        url += joiner + urllib.parse.urlencode(params)
-
-    body = None
-    sent = {"User-Agent": USER_AGENT, **(headers or {})}
-    if json is not None:
-        body = _json.dumps(json).encode("utf-8")
-        sent.setdefault("Content-Type", "application/json")
-    elif data is not None:
-        body = urllib.parse.urlencode(data).encode("utf-8")
-        sent.setdefault("Content-Type", "application/x-www-form-urlencoded")
-
+    url, body, sent = shape(url, params, json, data, headers)
     proxy = _proxy_for(url)
     history, current, verb = [], url, method.upper()
     for _hop in range(MAX_REDIRECTS):
@@ -350,8 +337,12 @@ def _proxy_for(url):
 
     `host:port` without a scheme is what WinHttpOpen wants; a full URL makes it fail.
     """
-    scheme = urllib.parse.urlsplit(url).scheme
-    configured = os.environ.get(f"{scheme.upper()}_PROXY") or os.environ.get("ALL_PROXY") or ""
+    parts = urllib.parse.urlsplit(url)
+    # NO_PROXY is honoured by urllib's ProxyHandler for the default transport; this path was ignoring
+    # it, so a host listed as direct still went through the proxy. `proxy_bypass` is that same rule.
+    if urllib.request.proxy_bypass(parts.hostname or ""):
+        return None
+    configured = os.environ.get(f"{parts.scheme.upper()}_PROXY") or os.environ.get("ALL_PROXY") or ""
     if not configured:
         return None
     parsed = urllib.parse.urlsplit(configured if "://" in configured else f"http://{configured}")

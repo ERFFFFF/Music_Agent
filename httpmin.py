@@ -104,6 +104,30 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+def shape(url, params, json, data, headers):
+    """`(url, body, headers)` — turn the call's arguments into what goes on the wire.
+
+    Shared with winhttp.py, which had a verbatim copy: two transports disagreeing about how a body is
+    encoded is the kind of bug that only shows up on the one machine using the other one.
+
+    `params` goes through `urlencode`, which percent-encodes the colons in `spotify:track:<id>` — the
+    form Spotify's /me/library documents.
+    """
+    if params:
+        joiner = "&" if urllib.parse.urlsplit(url).query else "?"
+        url += joiner + urllib.parse.urlencode(params)
+
+    body = None
+    sent = {"User-Agent": USER_AGENT, **(headers or {})}
+    if json is not None:
+        body = _json.dumps(json).encode("utf-8")
+        sent.setdefault("Content-Type", "application/json")
+    elif data is not None:
+        body = urllib.parse.urlencode(data).encode("utf-8")
+        sent.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    return url, body, sent
+
+
 _transport = None
 
 
@@ -140,18 +164,7 @@ def request(method, url, *, params=None, json=None, data=None, headers=None,
     if _transport is not None:
         return _transport(method, url, params=params, json=json, data=data, headers=headers,
                           timeout=timeout, cookies=cookies)
-    if params:
-        joiner = "&" if urllib.parse.urlsplit(url).query else "?"
-        url += joiner + urllib.parse.urlencode(params)
-
-    body = None
-    sent = {"User-Agent": USER_AGENT, **(headers or {})}
-    if json is not None:
-        body = _json.dumps(json).encode("utf-8")
-        sent.setdefault("Content-Type", "application/json")
-    elif data is not None:
-        body = urllib.parse.urlencode(data).encode("utf-8")
-        sent.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    url, body, sent = shape(url, params, json, data, headers)
 
     redirects = _Redirects()
     handlers = [redirects]

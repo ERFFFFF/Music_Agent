@@ -1,4 +1,6 @@
 import threading
+import tkinter
+
 import customtkinter as ctk
 import keyboard
 
@@ -271,7 +273,13 @@ class SettingsWindow:
         self._pump_logs()
 
     def _pump_logs(self):
-        """Append whatever is new. Re-arms itself, and stops cleanly once the window is gone."""
+        """Append whatever is new, then re-arm.
+
+        The re-arm is in `finally` on purpose. With it inside the `try`, ANY hiccup — a widget busy
+        mid tab-switch, one bad line — stopped the timer for good, and the symptom is a Logs page
+        that silently freezes with no error anywhere. The only thing that should end the loop is the
+        window going away, which is what TclError means here.
+        """
         try:
             lines, self._log_cursor = applog.since(self._log_cursor)
             if lines:
@@ -280,9 +288,15 @@ class SettingsWindow:
                 self.log_box.configure(state="disabled")
                 if self.log_follow.get() == "on":
                     self.log_box.see("end")
-            self.root.after(400, self._pump_logs)
-        except Exception:  # noqa: BLE001 — the window closed mid-poll; nothing to report to anyone
+        except tkinter.TclError:
+            return                       # window destroyed: stop, and do not re-arm
+        except Exception:                # noqa: BLE001 — never let the log page kill the settings window
             pass
+        finally:
+            try:
+                self.root.after(400, self._pump_logs)
+            except tkinter.TclError:
+                pass
 
     def _clear_logs(self):
         applog.clear()

@@ -38,10 +38,16 @@ from cadence import CadenceController, CadenceError, client_from_config
 from config import (ACTIONS, DEFAULT_HOTKEYS, DEFAULTS, MODES, config_path, env_config, env_path,
                     load_config, normalize_url, save_config, save_spotify_credentials)
 
-# Config fields that are credentials: `status` and `get` report whether they're set, never what they
-# are. A support question should never end with someone pasting their session cookie into a chat.
-SECRETS = ("cadence_session", "cf_access_client_secret", "spotify_client_secret",
-           "spotify_refresh_token")
+# Fields `get` and `status` report as "set" rather than printing. DERIVED from the list of things
+# sealed on disk, minus an explicit allowlist — because the hand-written copy this replaced silently
+# fell behind: `proxy_password` was added to SECRET_FIELDS and `get` printed it in the clear.
+# Anything new is now masked by DEFAULT, and showing it takes a deliberate edit here.
+SHOWN_ANYWAY = (
+    "cadence_url",           # the server address — the first thing a support question needs
+    "cf_access_client_id",   # the *id* half of a service token; useless without its secret
+    "spotify_client_id",     # visible in the Spotify dashboard; pairs with a secret that is not
+)
+SECRETS = tuple(field for field in config.SECRET_FIELDS if field not in SHOWN_ANYWAY)
 
 # The verbs, and the controller method behind each. `play` and `pause` mean what they say in both
 # modes — see CadenceController._to_paused and SpotifyController._transport, which read the current
@@ -510,6 +516,13 @@ def selftest():
     assert parser.parse_args(["-v"]).handler is cmd_run and parser.parse_args(["-v"]).verbose
     assert not parser.parse_args(["now"]).verbose and parser.parse_args(["-v", "now"]).verbose
     assert set(ACTIONS) == set(DEFAULT_HOTKEYS), "every action needs a default hotkey"
+
+    # Every credential sealed on disk is masked when printed, unless it is deliberately listed as
+    # safe to show. The hand-written list this replaced fell behind: proxy_password reached
+    # SECRET_FIELDS and `get` printed it in the clear.
+    for field in config_module.SECRET_FIELDS:
+        assert field in SECRETS or field in SHOWN_ANYWAY, f"{field} is neither masked nor allow-listed"
+    assert "proxy_password" in SECRETS and "cadence_session" in SECRETS
 
     # cmd_control reads .last_error to pick an exit code; a backend without one would make every
     # command exit 0, including the ones that failed.
