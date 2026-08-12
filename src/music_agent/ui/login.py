@@ -492,8 +492,7 @@ def _field(parent, label, value, secret=False, placeholder=None):
     ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=13), width=120, anchor="w").pack(side="left")
     var = ctk.StringVar(master=row, value=value)
     if secret:
-        ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8, show="•",
-                     placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
+        secret_entry(row, var, width=260)
     else:
         ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8,
                      placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")

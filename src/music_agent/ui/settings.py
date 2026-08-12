@@ -375,9 +375,7 @@ class SettingsWindow:
             if secret:
                 holder = ctk.CTkFrame(row, fg_color="transparent")
                 holder.pack(side="left", padx=(10, 0))
-                ctk.CTkEntry(holder, textvariable=var, width=300, height=32,
-                             corner_radius=8, show="•",
-                             font=ctk.CTkFont(size=13)).pack(side="left")
+                secret_entry(holder, var, width=300, height=32)
             else:
                 ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
                              font=ctk.CTkFont(size=13),
@@ -444,11 +442,10 @@ class SettingsWindow:
             # would revert that. The cookie itself survives either way -- forget() clears it in THIS
             # dict too, through the same callback that saves it -- but "the long-lived dict is stale"
             # is the rule the rest of this codebase follows, and the exception is not worth keeping.
-            for field in ("cadence_username", "cadence_password"):
-                try:
-                    config_module.update_config(field, "", self.config)
-                except OSError:
-                    pass
+            try:
+                config_module.forget_account(self.config)
+            except OSError:
+                pass          # a read-only config dir: signed out for this session either way
             self._refresh_account()
             if self.on_save_callback:
                 # Sign out has to reach the RUNNING controller too. Clearing only the file left the

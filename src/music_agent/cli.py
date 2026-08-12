@@ -257,12 +257,9 @@ def cmd_logout(cfg, args):
     # the cookie would print "Signed out" and leave you signed in. The GUI's Sign out does the same.
     # (These are only ever in the config file when the tray app's window put them there — the CLI
     # itself never writes them.)
-    owned = env_config()
-    for field in ("cadence_username", "cadence_password"):
-        if cfg.get(field) and field not in owned:
-            config.update_config(field, "", cfg)
+    from_env = config.forget_account(cfg)
     print("Signed out — the saved Cadence session has been cleared.")
-    if any(field in owned for field in ("cadence_username", "cadence_password")):
+    if from_env:
         # Not something this command can clear, and not something to leave unsaid: the next verb
         # will sign back in and look like the sign-out failed.
         print(f"USERNAME / PASSWORD in {env_path()} will sign in again on the next command. "

@@ -685,6 +685,26 @@ def update_config(key, value, cfg=None):
     return latest
 
 
+def forget_account(cfg):
+    """Clear the stored Cadence account. Returns the fields the `.env` owns, which it cannot clear.
+
+    "Signing out" is two things now, and only one of them belongs to the client: `CadenceClient.forget`
+    drops the cookie, and this drops the account the app would otherwise use to sign straight back in
+    on the next launch. Both front ends need both halves — the CLI's `logout` and Settings' Sign out —
+    and this half lives here so there is one copy of it rather than one per window.
+
+    `update_config` per field, not `save_config(cfg)`: `forget()` has just written the file, and a
+    caller's dict can be minutes old (a Settings window sitting open). Fields the `.env` supplies are
+    left alone — they are not in this file to clear — and returned so the caller can say so, because
+    a sign-out that the next command silently undoes needs explaining.
+    """
+    owned = env_config()
+    for field in ("cadence_username", "cadence_password"):
+        if cfg.get(field) and field not in owned:
+            update_config(field, "", cfg)
+    return [field for field in ("cadence_username", "cadence_password") if field in owned]
+
+
 def is_configured(cfg):
     """Does the selected mode have what it needs to run? Reads the dict only — no network, no extra
     files — because this decides whether to throw a setup window (or a setup prompt) at the user on

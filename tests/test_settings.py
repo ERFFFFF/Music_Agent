@@ -27,6 +27,7 @@ ctk = pytest.importorskip("customtkinter")               # the `gui` extra
 settings_ui = pytest.importorskip("music_agent.ui.settings")
 
 from music_agent import config                           # noqa: E402 — after the skip guard
+from music_agent.ui import widgets                       # noqa: E402
 
 
 def test_sign_out_clears_the_session_and_the_stored_account():
@@ -103,6 +104,21 @@ def test_settings_shows_the_saved_proxy_and_picks_up_one_saved_elsewhere():
                 assert win.proxy_vars["proxy_url"].get() == "proxy.company.com:8080"
                 assert win.proxy_vars["proxy_user"].get() == "CORP\\me"
                 assert win.proxy_vars["proxy_password"].get() == "pw with spaces "
+
+                # The password box is the only masked one, and it has an eye. Asserted on the widget
+                # tree because the wiring for this was silently reverted once and every test passed:
+                # a password rendered in the clear looks like nothing at all from the code.
+                def walk(parent, kind, out):
+                    for child in parent.winfo_children():
+                        if isinstance(child, kind):
+                            out.append(child)
+                        walk(child, kind, out)
+                    return out
+
+                masked = [e for e in walk(root, ctk.CTkEntry, []) if e.cget("show")]
+                eyes = [b for b in walk(root, ctk.CTkButton, [])
+                        if b.cget("text") in (widgets.EYE_SHOW, widgets.EYE_HIDE)]
+                assert len(masked) == 1 and len(eyes) == 1, (len(masked), len(eyes))
 
                 # Something else writes a different proxy while this window is open — which is what
                 # the sign-in window's Proxy dialog does, through _with_hidden_window.
