@@ -46,6 +46,57 @@ def test_reload_config():
         assert fake_keyboard.unhook_all_hotkeys.called, "the old bindings have to go first"
 
 
+def test_a_stored_account_signs_in_without_a_window():
+    """An expired session must not put a password box in front of someone whose password the app is
+    already holding — that is the whole reason it was asked to keep it.
+
+    The window is the fallback, not the first move: `login.sign_in` here would mean a real Tk window
+    in a test run, so if this ever regresses the suite hangs on a dialog rather than failing quietly.
+    """
+    signed_in_with = []
+
+    class FakeClient:
+        def is_authenticated(self):
+            return False                       # the session aged out, as it does after ~7 days
+
+        def login(self, user, password):
+            signed_in_with.append((user, password))
+            return {"username": user}
+
+    cfg = {"mode": "cadence", "cadence_url": "https://cadence.example",
+           "cadence_username": "erfffff", "cadence_password": "stored-pw", "hotkeys": {}}
+
+    with mock.patch.object(tray, "client_from_config", lambda _cfg: FakeClient()), \
+            mock.patch.object(tray, "is_configured", lambda _cfg: True):
+        controller = tray.build_controller(cfg)
+
+    assert signed_in_with == [("erfffff", "stored-pw")], signed_in_with
+    assert controller is not None and controller.client.__class__ is FakeClient
+
+
+def test_a_rejected_stored_account_falls_back_to_the_window():
+    """A password that stopped working (rotated server-side) has to reach the window, pre-filled, not
+    kill the launch: the window is the only thing that can fix it."""
+    from music_agent.backends.cadence import CadenceError
+
+    class RefusingClient:
+        def is_authenticated(self):
+            return False
+
+        def login(self, _user, _password):
+            raise CadenceError("Wrong username or password.")
+
+    cfg = {"mode": "cadence", "cadence_url": "https://cadence.example",
+           "cadence_username": "erfffff", "cadence_password": "old-pw", "hotkeys": {}}
+    asked = []
+
+    with mock.patch.object(tray, "client_from_config", lambda _cfg: RefusingClient()), \
+            mock.patch.object(tray, "is_configured", lambda _cfg: True), \
+            mock.patch.object(tray.login, "sign_in", lambda _cfg: asked.append(_cfg) or None):
+        assert tray.build_controller(cfg) is None      # user closed the window
+    assert len(asked) == 1, "a refused stored password must fall back to the sign-in window"
+
+
 def test_the_tray_app_never_reads_a_dotenv():
     """The `.env` is the CLI's mechanism. The tray app — portable or installed — is configured from
     cadence_config.txt and its own windows, so a file it never shows you must not be able to overrule

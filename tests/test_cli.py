@@ -163,3 +163,52 @@ def test_cli():
     example = open(os.path.join(config.app_dir(), ".env.example"), encoding="utf-8").read()
     undocumented = [k for k in (*config_module.ENV_HOTKEYS, "MODE") if k not in example]
     assert not undocumented, f"not in .env.example: {undocumented}"
+
+
+def test_logout_really_logs_out():
+    """`logout` has to leave the app UNCONFIGURED, not just cookieless.
+
+    The account is stored now (the tray app's sign-in window writes it), and `_controller` signs
+    itself back in from a stored username/password without asking. So clearing only the session
+    would print "Signed out" and leave the very next verb signed in — the same trap the GUI's Sign
+    out had. Found by review, pinned here.
+    """
+    import contextlib
+    import io
+    import os
+    import tempfile
+
+    from music_agent import config as config_module
+
+    real_app_dir = config_module.app_dir
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config_module.app_dir = lambda: d
+            config_module.use_env(False)
+            cfg = config_module.load_config()
+            cfg.update({"mode": "cadence", "cadence_url": "https://cadence.example",
+                        "cadence_session": "a-cookie", "cadence_username": "someone",
+                        "cadence_password": "stored-pw"})
+            config_module.save_config(cfg)
+            assert config_module.is_configured(config_module.load_config())
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                MODULE.cmd_logout(config_module.load_config(), None)
+
+            after = config_module.load_config()
+            assert after["cadence_session"] == "", "the cookie survived"
+            assert after["cadence_username"] == "" and after["cadence_password"] == "", after
+            assert not config_module.is_configured(after), "still configured: logout signed nothing out"
+
+            # A .env-supplied account is NOT this command's to clear — but staying quiet about it
+            # would look like the sign-out failed when the next verb logs straight back in.
+            with open(os.path.join(d, ".env"), "w", encoding="utf-8") as f:
+                f.write("DOMAIN=cadence.example\nUSERNAME=someone\nPASSWORD=env-pw\n")
+            config_module.use_env(True)
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                MODULE.cmd_logout(config_module.load_config(), None)
+            assert "will sign in again" in printed.getvalue(), printed.getvalue()
+    finally:
+        config_module.app_dir = real_app_dir
+        config_module.use_env(True)

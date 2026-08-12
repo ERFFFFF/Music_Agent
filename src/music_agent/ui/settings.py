@@ -9,6 +9,7 @@ from music_agent import config as config_module
 
 from music_agent.backends.cadence import client_from_config
 from music_agent.config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
+from music_agent.ui.widgets import secret_entry
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -369,11 +370,19 @@ class SettingsWindow:
                          anchor="w").pack(side="left")
             var = ctk.StringVar(master=self.root, value=self.config.get(field, ""))
             self.proxy_vars[field] = var
-            entry = ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
-                                 font=ctk.CTkFont(size=13),
-                                 placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "",
-                                 show="•" if secret else "")
-            entry.pack(side="left", padx=(10, 0))
+            # A saved value is shown as itself -- the address and the username are things you need to
+            # read to check. Only the password is masked, and it has the eye.
+            if secret:
+                holder = ctk.CTkFrame(row, fg_color="transparent")
+                holder.pack(side="left", padx=(10, 0))
+                ctk.CTkEntry(holder, textvariable=var, width=300, height=32,
+                             corner_radius=8, show="•",
+                             font=ctk.CTkFont(size=13)).pack(side="left")
+            else:
+                ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
+                             font=ctk.CTkFont(size=13),
+                             placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "",
+                             ).pack(side="left", padx=(10, 0))
 
         row = ctk.CTkFrame(card, fg_color="transparent")
         row.pack(fill="x", padx=20, pady=(6, 14))
@@ -397,7 +406,11 @@ class SettingsWindow:
             self.account_hint.configure(text=(
                 "Cadence: hotkeys are sent to your Cadence account and performed by the open Cadence "
                 "tab in your browser — keep one open. " +
-                ("Signed in. " if signed_in else "Not signed in yet. ") +
+                # Say WHICH account and WHICH server. Both are stored (encrypted) and both were
+                # invisible here: the only way to see them was to sign out, which is a strange price
+                # for "what am I signed in as?".
+                (f"Signed in as {self.config.get('cadence_username') or '?'} at "
+                 f"{self.config.get('cadence_url') or '?'}. " if signed_in else "Not signed in yet. ") +
                 ("⚙ Cloudflare Access token set." if has_token else "⚙ No Cloudflare Access token.")
             ))
         else:
@@ -421,6 +434,21 @@ class SettingsWindow:
             return
         if self.account_btn.cget("text") == "Sign out":
             client_from_config(self.config).forget()
+            # ...and the stored account with it. The app re-signs in from these on launch now, so
+            # clearing only the cookie would put the session straight back and make Sign out look
+            # broken -- the same bug the live-controller rebuild below was added for.
+            #
+            # update_config, NOT save_config(self.config): this dict was read when the window
+            # opened, and anything that rotates a credential in the meantime (a Spotify refresh, a
+            # slid session cookie) has changed the file underneath it. Writing the captured copy back
+            # would revert that. The cookie itself survives either way -- forget() clears it in THIS
+            # dict too, through the same callback that saves it -- but "the long-lived dict is stale"
+            # is the rule the rest of this codebase follows, and the exception is not worth keeping.
+            for field in ("cadence_username", "cadence_password"):
+                try:
+                    config_module.update_config(field, "", self.config)
+                except OSError:
+                    pass
             self._refresh_account()
             if self.on_save_callback:
                 # Sign out has to reach the RUNNING controller too. Clearing only the file left the
@@ -446,6 +474,12 @@ class SettingsWindow:
         finally:
             self.root.deiconify()
             self.config = load_config()   # the setup windows save settings of their own — pick them up
+            # ...and so do the WIDGETS. _save reads the StringVars, not self.config, so a proxy typed
+            # into the sign-in window's Proxy dialog was still showing as empty here — and the next
+            # Save wrote that emptiness over it. Re-reading the dict alone silently fixed nothing.
+            for field, var in self.proxy_vars.items():
+                var.set(self.config.get(field, ""))
+            self.proxy_auth_var.set("on" if (self.config.get("proxy_auth") or "").strip() else "off")
             self._refresh_account()
 
     def _start_capture(self, action_id):
@@ -599,7 +633,10 @@ class SettingsWindow:
         self.config["hotkeys"] = new_hotkeys
         self.config["mode"] = self.mode_var.get()
         for field, var in self.proxy_vars.items():
-            self.config[field] = var.get().strip()
+            # Not the password: trimming a credential is how you get an auth failure nobody can
+            # explain, and config._read_env already refuses to do it to a .env password for the same
+            # reason. The address and the username are trimmed, where a stray space is always a slip.
+            self.config[field] = var.get() if field == "proxy_password" else var.get().strip()
         self.config["proxy_auth"] = "current-user" if self.proxy_auth_var.get() == "on" else ""
         try:
             save_config(self.config)

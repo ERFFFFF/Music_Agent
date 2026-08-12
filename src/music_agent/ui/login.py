@@ -17,8 +17,9 @@ import threading
 import customtkinter as ctk
 
 from music_agent.backends.cadence import CadenceError, client_from_config, normalize_url
-from music_agent.config import (DEFAULT_REDIRECT_URI, config_path, load_config, save_config,
-                    save_spotify_credentials)
+from music_agent.config import (DEFAULT_REDIRECT_URI, apply_proxy, config_path, load_config,
+                    save_config, save_spotify_credentials)
+from music_agent.ui.widgets import secret_entry
 
 _lock = threading.Lock()
 
@@ -63,6 +64,14 @@ class LoginWindow:
             font=ctk.CTkFont(size=18), command=self._open_cloudflare,
         )
         self.gear.pack(side="right", anchor="n")
+        # Next to the gear, because on a network with a mandatory proxy this window is the first
+        # thing that fails and Settings (behind the tray icon) does not exist yet.
+        ctk.CTkButton(
+            header, text="Proxy", width=64, height=36, corner_radius=8, fg_color="transparent",
+            hover_color=("gray80", "gray25"), text_color=("gray30", "gray75"), border_width=1,
+            border_color=("gray60", "gray40"), font=ctk.CTkFont(size=12),
+            command=lambda: proxy_dialog(self.root, self.cfg),
+        ).pack(side="right", anchor="n", padx=(0, 8))
 
         # The values the gear dialog edits. Held as vars (not widgets) so _submit reads one place
         # whether or not the dialog was ever opened.
@@ -76,10 +85,12 @@ class LoginWindow:
         card = ctk.CTkFrame(frame, corner_radius=12)
         card.pack(fill="x")
 
+        # Pre-filled from what is already stored, decrypted. An app that made you retype a server
+        # address it has known for months was treating its own config file as write-only.
         self.url = _field(card, "Server", self.cfg.get("cadence_url", ""),
                           placeholder="https://cadence.your-domain.com")
-        self.user = _field(card, "Username", "")
-        self.password = _field(card, "Password", "", show="•")
+        self.user = _field(card, "Username", self.cfg.get("cadence_username", ""))
+        self.password = _field(card, "Password", self.cfg.get("cadence_password", ""), secret=True)
 
         ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
@@ -146,6 +157,16 @@ class LoginWindow:
             self.submit.configure(state="normal", text="Sign in")
             return
         logging.info(f"Signed in to Cadence as {me.get('username')}")
+        # Remember the account only once it has WORKED. Storing it alongside the URL above would keep
+        # a typo'd password and silently retry it on every launch, which reads as the server
+        # rejecting a good account. `self.cfg` already holds the session cookie: client.login() put it
+        # there through update_config, so this save cannot undo it.
+        self.cfg["cadence_username"] = self.user.get().strip()
+        self.cfg["cadence_password"] = self.password.get()
+        try:
+            save_config(self.cfg)
+        except OSError:
+            pass  # signed in for this session either way; the next launch just asks again
         self.result = client
         self.root.destroy()
 
@@ -243,7 +264,8 @@ class SpotifySetupWindow:
         card = ctk.CTkFrame(frame, corner_radius=12)
         card.pack(fill="x")
         self.client_id = _field(card, "Client ID", cfg.get("spotify_client_id", ""))
-        self.client_secret = _field(card, "Client Secret", cfg.get("spotify_client_secret", ""), show="•")
+        self.client_secret = _field(card, "Client Secret", cfg.get("spotify_client_secret", ""),
+                                    secret=True)
         self.redirect = _field(card, "Redirect URI",
                                cfg.get("spotify_redirect_uri") or DEFAULT_REDIRECT_URI)
         ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
@@ -325,7 +347,7 @@ def cloudflare_dialog(parent, cfg, id_var=None, secret_var=None):
     local_id = _field(card, "Client Id", (id_var.get() if id_var else cfg.get("cf_access_client_id", "")))
     local_secret = _field(card, "Client Secret",
                           (secret_var.get() if secret_var else cfg.get("cf_access_client_secret", "")),
-                          show="•")
+                          secret=True)
     ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
     error = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=12),
@@ -371,8 +393,92 @@ def cloudflare_dialog(parent, cfg, id_var=None, secret_var=None):
     parent.wait_window(win)   # blocking: the caller reads the values right after
 
 
-def _field(parent, label, value, show=None, placeholder=None):
-    """One labelled entry row, shared by every window here.
+def proxy_dialog(parent, cfg):
+    """The corporate proxy, from the sign-in screen — where it is actually needed.
+
+    Settings has the same four fields, but Settings lives behind the tray icon and the tray icon does
+    not exist yet on a first run: the sign-in window is the first thing a fresh copy shows, and on a
+    network that mandates a proxy it is also the first thing to fail. Without this, the only way to
+    configure the proxy was to finish the sign-in it was blocking.
+
+    Saved settings are applied IMMEDIATELY (config.apply_proxy), so the very next "Sign in" goes
+    through the proxy rather than a restart later.
+    """
+    win = ctk.CTkToplevel(parent)
+    win.title("Corporate proxy")
+    win.resizable(False, False)
+    win.transient(parent)
+    win.grab_set()
+    win.attributes("-topmost", True)
+
+    frame = ctk.CTkFrame(win, fg_color="transparent")
+    frame.pack(padx=24, pady=20, fill="both", expand=True)
+    ctk.CTkLabel(frame, text="Corporate proxy — optional",
+                 font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w")
+    ctk.CTkLabel(frame, text="Leave empty to connect directly, which is what almost every machine "
+                             "wants. Fill this in if your network forces traffic through a proxy — the "
+                             "sign it does is “cannot resolve the host”, which looks like a DNS fault "
+                             "and is not one. The username and password are stored encrypted, like "
+                             "your account.",
+                 font=ctk.CTkFont(size=12), text_color=("gray50", "gray60"),
+                 wraplength=430, justify="left").pack(anchor="w", pady=(4, 14))
+
+    card = ctk.CTkFrame(frame, corner_radius=12)
+    card.pack(fill="x")
+    address = _field(card, "Proxy address", cfg.get("proxy_url", ""),
+                     placeholder="proxy.company.com:8080")
+    user = _field(card, "Username", cfg.get("proxy_user", ""))
+    password = _field(card, "Password", cfg.get("proxy_password", ""), secret=True)
+
+    row = ctk.CTkFrame(card, fg_color="transparent")
+    row.pack(fill="x", padx=20, pady=(2, 12))
+    auth = ctk.StringVar(master=row, value="on" if (cfg.get("proxy_auth") or "").strip() else "off")
+    ctk.CTkCheckBox(row, text="Sign in to the proxy as my Windows user (NTLM / Kerberos)",
+                    variable=auth, onvalue="on", offvalue="off", font=ctk.CTkFont(size=12),
+                    checkbox_width=18, checkbox_height=18).pack(side="left")
+
+    error = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=12),
+                         text_color=("#b3261e", "#f2b8b5"), wraplength=430, justify="left")
+    error.pack(anchor="w", pady=(8, 0))
+
+    def save():
+        cfg["proxy_url"] = address.get().strip()
+        cfg["proxy_user"] = user.get().strip()
+        cfg["proxy_password"] = password.get()
+        cfg["proxy_auth"] = "current-user" if auth.get() == "on" else ""
+        try:
+            save_config(cfg)
+        except OSError as e:
+            error.configure(text=f"Couldn't save: {e}")
+            return
+        # Now, not at the next launch: whoever just typed this in is about to press Sign in, and
+        # doing that through the old (absent) proxy would blame the address for a timing problem.
+        applied = apply_proxy(cfg)
+        logging.info("Proxy settings saved: %s", ", ".join(sorted(applied)) or "none (direct)")
+        win.grab_release()
+        win.destroy()
+
+    def cancel():
+        win.grab_release()
+        win.destroy()
+
+    buttons = ctk.CTkFrame(frame, fg_color="transparent")
+    buttons.pack(fill="x", pady=(12, 0))
+    ctk.CTkButton(buttons, text="Cancel", width=90, height=36, corner_radius=8, fg_color="transparent",
+                  hover_color=("gray80", "gray25"), text_color=("gray30", "gray70"), border_width=1,
+                  border_color=("gray60", "gray40"), command=cancel).pack(side="right")
+    ctk.CTkButton(buttons, text="Save", width=100, height=36, corner_radius=8,
+                  font=ctk.CTkFont(size=13, weight="bold"), command=save).pack(side="right", padx=(0, 10))
+    win.protocol("WM_DELETE_WINDOW", cancel)
+    win.bind("<Return>", lambda _e: save())
+
+    win.update_idletasks()
+    win.geometry(f"+{parent.winfo_x() + 60}+{parent.winfo_y() + 60}")
+    parent.wait_window(win)
+
+
+def _field(parent, label, value, secret=False, placeholder=None):
+    """One labelled entry row, shared by every window here. `secret=True` masks it and adds the eye.
 
     `master=row` is not optional. A StringVar with no master attaches to tkinter's `_default_root`,
     which is whichever root was created FIRST and is only released when that root is destroyed. Opened
@@ -385,8 +491,12 @@ def _field(parent, label, value, show=None, placeholder=None):
     row.pack(fill="x", padx=20, pady=6)
     ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=13), width=120, anchor="w").pack(side="left")
     var = ctk.StringVar(master=row, value=value)
-    ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8, show=show,
-                 placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
+    if secret:
+        ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8, show="•",
+                     placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
+    else:
+        ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8,
+                     placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
     return var
 
 

@@ -45,8 +45,10 @@ from music_agent.config import (ACTIONS, DEFAULT_HOTKEYS, DEFAULTS, MODES, confi
 # Anything new is now masked by DEFAULT, and showing it takes a deliberate edit here.
 SHOWN_ANYWAY = (
     "cadence_url",           # the server address — the first thing a support question needs
+    "cadence_username",      # an account name, not a secret; `status` prints it in full already
     "cf_access_client_id",   # the *id* half of a service token; useless without its secret
     "spotify_client_id",     # visible in the Spotify dashboard; pairs with a secret that is not
+    "proxy_user",            # same: sealed on disk because it is an identity, but readable here
 )
 SECRETS = tuple(field for field in config.SECRET_FIELDS if field not in SHOWN_ANYWAY)
 
@@ -97,7 +99,11 @@ def _cadence_sign_in(client, cfg, interactive=True):
     try:
         return client.login(username, password)
     except CadenceError as e:
-        _die(f"{e}\nCheck DOMAIN / USERNAME / PASSWORD in {env_path() or 'your .env'}.")
+        # Name the file the credentials actually came from. An account can also be stored in the
+        # config file now (the tray app's sign-in window puts it there), and blaming a .env that
+        # does not exist sends someone off to edit a file they never had.
+        source = env_path() if "cadence_username" in env_config() else config_path()
+        _die(f"{e}\nCheck the server address and account in {source}.")
 
 
 def _controller(cfg):
@@ -246,7 +252,21 @@ def cmd_logout(cfg, args):
         print("Spotify authorisation cleared — the next command opens the browser again.")
         return
     client_from_config(cfg).forget()
+    # ...and the stored account with it, or this command does not do what it says: `_controller`
+    # signs straight back in from a saved username/password on the very next verb, so clearing only
+    # the cookie would print "Signed out" and leave you signed in. The GUI's Sign out does the same.
+    # (These are only ever in the config file when the tray app's window put them there — the CLI
+    # itself never writes them.)
+    owned = env_config()
+    for field in ("cadence_username", "cadence_password"):
+        if cfg.get(field) and field not in owned:
+            config.update_config(field, "", cfg)
     print("Signed out — the saved Cadence session has been cleared.")
+    if any(field in owned for field in ("cadence_username", "cadence_password")):
+        # Not something this command can clear, and not something to leave unsaid: the next verb
+        # will sign back in and look like the sign-out failed.
+        print(f"USERNAME / PASSWORD in {env_path()} will sign in again on the next command. "
+              f"{_env_note()}")
 
 
 def cmd_get(cfg, args):

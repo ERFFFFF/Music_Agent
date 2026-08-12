@@ -204,8 +204,10 @@ def test_credentials_encrypted_at_rest():
 
     # Any field holding a credential must be in SECRET_FIELDS. Named explicitly rather than pattern-
     # matched, so adding one to DEFAULTS and forgetting to seal it fails right here.
-    credentials = {"cadence_url", "cadence_session", "cf_access_client_id", "cf_access_client_secret",
-                   "spotify_client_id", "spotify_client_secret", "spotify_refresh_token"}
+    credentials = {"cadence_url", "cadence_session", "cadence_username", "cadence_password",
+                   "cf_access_client_id", "cf_access_client_secret",
+                   "spotify_client_id", "spotify_client_secret", "spotify_refresh_token",
+                   "proxy_user", "proxy_password"}
     assert credentials <= set(config.SECRET_FIELDS), \
         f"not sealed at rest: {sorted(credentials - set(config.SECRET_FIELDS))}"
     assert "hotkeys" not in config.SECRET_FIELDS and "mode" not in config.SECRET_FIELDS
@@ -220,7 +222,11 @@ def test_credentials_encrypted_at_rest():
                 # distinctive values: a plain word like "refresh" would also match the KEY name
                 cfg.update({"cadence_session": "SESSION-VALUE-A", "mode": "spotify",
                             "spotify_refresh_token": "REFRESHTOKEN-VALUE-B",
-                            "spotify_client_secret": "CLIENTSECRET-VALUE-C"})
+                            "spotify_client_secret": "CLIENTSECRET-VALUE-C",
+                            "cadence_username": "ACCOUNT-VALUE-D",
+                            "cadence_password": "PASSWORD-VALUE-E",
+                            "proxy_user": "PROXYUSER-VALUE-F",
+                            "proxy_password": "PROXYPASS-VALUE-G"})
                 cfg["hotkeys"]["play_pause"] = "f8"
                 config.save_config(cfg)
 
@@ -228,12 +234,19 @@ def test_credentials_encrypted_at_rest():
                 for key in config.SECRET_FIELDS:
                     if raw[key]:
                         assert raw[key].startswith(config.ENC_PREFIX), f"{key} written in the clear"
-                for secret in ("SESSION-VALUE-A", "REFRESHTOKEN-VALUE-B", "CLIENTSECRET-VALUE-C"):
+                for secret in ("SESSION-VALUE-A", "REFRESHTOKEN-VALUE-B", "CLIENTSECRET-VALUE-C",
+                               "ACCOUNT-VALUE-D", "PASSWORD-VALUE-E", "PROXYUSER-VALUE-F",
+                               "PROXYPASS-VALUE-G"):
                     assert secret not in open(config.config_path()).read(), f"{secret!r} is on disk"
                 assert raw["mode"] == "spotify" and raw["hotkeys"]["play_pause"] == "f8"
 
                 back = config.load_config()
                 assert back["cadence_session"] == "SESSION-VALUE-A"
+                # The window shows these back to you, so a one-way trip would look like "it forgot".
+                assert back["cadence_username"] == "ACCOUNT-VALUE-D"
+                assert back["cadence_password"] == "PASSWORD-VALUE-E"
+                assert back["proxy_user"] == "PROXYUSER-VALUE-F"
+                assert back["proxy_password"] == "PROXYPASS-VALUE-G"
                 assert back["spotify_refresh_token"] == "REFRESHTOKEN-VALUE-B"
                 assert back["spotify_client_secret"] == "CLIENTSECRET-VALUE-C"
 
@@ -325,3 +338,81 @@ def test_spotify_consent_refuses_a_mismatched_state():
 def test_spotify_consent_port_is_free_for_a_second_attempt():
     """The callback server must release its port, or the next consent cannot bind it."""
     spotify_consent(8899)
+
+
+# ------------------------------------------------------- 4. a configured proxy carries the request
+def test_a_proxy_from_the_config_file_actually_carries_the_request():
+    """The proxy boxes in Settings have to reach `urllib`, not just the config file.
+
+    Everything else about the proxy is checked by asserting on `os.environ`, which proves only that
+    the app set a variable. This runs a REAL proxy on loopback and asks for a host that does not
+    exist (`.invalid` is reserved and never resolves): if the request arrives at all, it arrived
+    through the proxy, because nothing else could have found that address.
+
+    It also pins the credential round trip. `config.proxy_url()` percent-encodes the account into the
+    URL — a password containing `@ : /` would otherwise split it somewhere other than where it means
+    to — and urllib unquotes it again into the Proxy-Authorization header. This is the only place the
+    two halves of that meet.
+    """
+    import base64
+    import http.server
+
+    from music_agent import config
+    from music_agent.net import httpmin
+
+    seen = []
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):
+            # Absolute-form request-target: the shape a client uses ONLY when talking to a proxy.
+            seen.append((self.path, self.headers.get("Proxy-Authorization")))
+            body = b'{"through":"proxy"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    real_app_dir = config.app_dir
+    saved_env = {key: os.environ.get(key) for key in config.ENV_PROXY_KEYS}
+    password = "p@ss:w/rd"          # every character that would break an unquoted URL
+    user = "corp" + chr(92) + "me"  # a domain account, backslash and all
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config.app_dir = lambda: d
+            config.use_env(False)                     # the GUI's path: config file only
+            cfg = config.load_config()
+            cfg.update({"proxy_url": f"127.0.0.1:{port}", "proxy_user": user,
+                        "proxy_password": password})
+            config.save_config(cfg)
+
+            # Nothing else is called: load_config applies the proxy itself, which is the promise --
+            # every entry point gets it without knowing the proxy exists.
+            config.load_config()
+            assert os.environ.get("HTTPS_PROXY", "").startswith("http://corp%5Cme:"), os.environ.get("HTTPS_PROXY")
+            assert password not in os.environ["HTTPS_PROXY"], "the password must be percent-encoded"
+
+            answer = httpmin.request("GET", "http://music-agent.invalid/api/whatever", timeout=10)
+            assert answer.json() == {"through": "proxy"}, answer.content
+    finally:
+        config.app_dir = real_app_dir
+        for key, value in saved_env.items():
+            os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
+        server.shutdown()
+        server.server_close()
+
+    assert len(seen) == 1, seen
+    target, authorization = seen[0]
+    assert target == "http://music-agent.invalid/api/whatever", target
+    assert authorization and authorization.startswith("Basic "), "the proxy account was not sent"
+    decoded = base64.b64decode(authorization.split()[1]).decode()
+    assert decoded == f"{user}:{password}", decoded

@@ -74,7 +74,8 @@ folder is read-only — an installed copy under Program Files — it falls back 
 
 That protection is also why the file doesn't travel. Move the exe to **another PC or another Windows
 account** and the secrets won't decrypt there, so it asks you to sign in once on the new machine —
-your shortcuts and mode come across intact. Sign out in Settings clears the session either way.
+your shortcuts and mode come across intact. Sign out in Settings clears the session **and the stored
+account**, either way.
 
 Using the app keeps you signed in: each hotkey refreshes the session, so it only expires after ~7 days
 of not touching it at all.
@@ -267,6 +268,9 @@ choose while using it, not the things you configure:
 | Field | What it is | Where it comes from |
 |---|---|---|
 | `cadence_session` | The signed Cadence session cookie | Earned by signing in. Slides on every command, so an agent in use never logs in again |
+| `cadence_url`, `cadence_username`, `cadence_password` | Your server and account | Typed into the sign-in window. Stored so it can show them back to you, and so an expired session re-signs in without a window. **CLI:** never stored — the `.env` keeps them |
+| `cf_access_client_id` / `_secret` | Cloudflare Access service token | The ⚙ on the sign-in window, or in Settings |
+| `proxy_url`, `proxy_user`, `proxy_password`, `proxy_auth` | Corporate proxy, all optional | Settings, or the **Proxy** button on the sign-in window |
 | `spotify_refresh_token` | The OAuth token from Spotify's browser consent | Earned once at consent. Spotify may hand back a new one on any refresh; it is re-saved when it does |
 | `mode` | `cadence` or `spotify` | Settings, `set mode`, or `MODE` in the `.env` (CLI only) |
 | `hotkeys` | In the tray app, all five. In the CLI, the ones the `.env` does **not** name | Settings, or `hotkeys <action> <combo>` |
@@ -277,7 +281,24 @@ the `.env` supplies is blanked on every write, so there is exactly one place to 
 to your Windows account — copy it to another PC or user and those fields simply read as empty and you
 sign in once there. `mode` and `hotkeys` stay readable on purpose so a moved copy still looks sane.
 
+Passwords are stored because the app is asked to remember them, and **Sign out clears the account as
+well as the cookie** — otherwise it would sign itself straight back in and Sign out would look broken.
+The JSON *keys* stay readable so the file is still something you can open and understand; no value
+worth protecting is in the clear.
+
 It is gitignored, and **safe to delete** — see below.
+
+### Seeing what is stored
+
+Every window shows what it already has, decrypted: the server address, your username, the proxy
+address and its username are ordinary text you can read and correct. **Passwords are dots with an eye
+next to them** — ◉ to reveal, ⌽ to hide again — because the value you are being asked to confirm is
+the one you cannot see, and retyping a password blind to check it is how people lock themselves out.
+
+The proxy is configurable from the **sign-in window** as well as Settings. That matters on a network
+that mandates one: the sign-in window is the first thing a fresh copy shows and the first thing such a
+network breaks, and Settings lives behind a tray icon that does not exist yet. Saving there applies
+the proxy immediately, so the next "Sign in" goes through it.
 
 ### Stopping and restarting
 

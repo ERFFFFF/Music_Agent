@@ -6,10 +6,16 @@ Format is JSON (readable, and one parser instead of three) holding the whole con
       "mode": "cadence",
       "cadence_url": "https://cadence.example.com",   # YOUR server — no default is baked in
       "cadence_session": "<signed session cookie — this is a credential>",
+      "cadence_username": "", "cadence_password": "",   # what the sign-in window collects
       "cf_access_client_id": "", "cf_access_client_secret": "",
       "spotify_client_id": "", "spotify_client_secret": "", "spotify_redirect_uri": "...",
+      "proxy_url": "", "proxy_user": "", "proxy_password": "", "proxy_auth": "",
       "hotkeys": {"play_pause": "ctrl+alt+up", ...}
     }
+
+    Every value above except `mode`, `hotkeys`, `spotify_redirect_uri`, `proxy_url` and `proxy_auth`
+    is stored as `"enc:<base64 DPAPI blob>"`, not as what you see here. The KEYS stay readable — the
+    file has to remain JSON someone can look at — but no value you would mind losing is in the clear.
 
 It replaces the old config.json + cadence_session.json trio, which scattered one app's settings across
 three files and two directories; those are migrated in on first run and then left alone.
@@ -24,10 +30,11 @@ cadence_config.txt where it would have to be rotated twice.
 and from its own windows: one file, one place, and Settings means what it says. A .env is a headless
 mechanism for a headless front end.
 
-SECURITY: every credential still stored here (session cookie, Cadence URL, Spotify and Cloudflare keys)
-is encrypted at rest with Windows DPAPI — see SECRET_FIELDS below. `mode` and `hotkeys` stay readable
-on purpose. The file is also written 0600 where the OS honours that. "Sign out" in Settings clears the
-session.
+SECURITY: every credential stored here — session cookie, Cadence URL, **account and password**,
+Spotify and Cloudflare keys, and the **proxy account** — is encrypted at rest with Windows DPAPI, see
+SECRET_FIELDS below. `mode` and `hotkeys` stay readable on purpose. The file is also written 0600
+where the OS honours that. "Sign out" in Settings clears the session AND the stored account, or it
+would silently sign itself back in on the next launch.
 """
 
 import base64
@@ -78,6 +85,17 @@ DEFAULTS = {
     # The signed Cadence session cookie. Saved so the login window appears once per machine, not once
     # per launch — each hotkey slides its 7-day window, so an agent in use never has to log in again.
     "cadence_session": "",
+    # The account itself. Stored (sealed, like everything else in SECRET_FIELDS) so the sign-in window
+    # can show you what it already has instead of an empty form, and so an expired session re-signs in
+    # without a window at all. The CLI has always had this from its .env; the GUI now has its own copy
+    # of the same thing, which is what "the app is configured from its config file" has to mean.
+    #
+    # It is a real widening of what sits on disk — a password is reusable where a session cookie is
+    # not — and it is deliberate: the alternative is an app that asks for a password it will not
+    # remember. Sign out clears both, DPAPI seals both, and neither is ever written when the .env
+    # supplies it.
+    "cadence_username": "",
+    "cadence_password": "",
     # Cloudflare Access service token, for a Cadence host that sits behind Access. A native app can't
     # complete the interactive Access login, so this is the supported headless path.
     "cf_access_client_id": "",
@@ -106,9 +124,10 @@ DEFAULTS = {
 # config fields on the right; matching ignores case. Aliases are listed generic-first, specific-last,
 # so a file carrying both DOMAIN and CADENCE_URL resolves to the unambiguous one.
 #
-# `cadence_username` / `cadence_password` are deliberately NOT in DEFAULTS: they exist only in this
-# dict and in memory, so `save_config` (which is built from DEFAULTS) cannot write an account password
-# to disk even by accident. The app stores the SESSION it exchanges them for, never the password.
+# `cadence_username` / `cadence_password` ARE in DEFAULTS now, because the sign-in window has to be
+# able to show you what it already knows. That does not weaken the rule below: a value the .env
+# supplies is still written back as its DEFAULT, so an account configured in a .env never lands in
+# cadence_config.txt — only one typed into the window does.
 ENV_FILENAME = ".env"
 
 # ------------------------------------------------------------------------------ who may read a .env
@@ -249,6 +268,11 @@ def apply_proxy(cfg):
     in_effect = httpmin.use_windows_transport(wanted)
     if wanted:
         applied["PROXY_AUTH"] = "current-user" if in_effect else "current-user (UNAVAILABLE: not Windows)"
+    if cfg.get("proxy_password") and not (cfg.get("proxy_user") or "").strip():
+        # proxy_url() drops the password when there is no username to attach it to, and a silently
+        # ignored credential looks exactly like a wrong one. Here rather than in each dialog: the
+        # CLI reaches this too, and one warning cannot fall out of step with itself.
+        logging.warning("A proxy password is set with no proxy username — it will not be sent.")
     logging.debug("Proxy in effect: %s", redact_url(applied.get("HTTPS_PROXY", "")) or "none (direct)")
     return applied
 
@@ -289,9 +313,10 @@ def normalize_url(raw):
 # another Windows user and these fields won't decrypt, so the app treats them as empty and asks you to
 # sign in once there. `mode` and `hotkeys` are deliberately left plaintext so a moved copy still keeps
 # its shortcuts and doesn't look corrupt.
-SECRET_FIELDS = ("cadence_url", "cadence_session", "cf_access_client_id", "cf_access_client_secret",
+SECRET_FIELDS = ("cadence_url", "cadence_session", "cadence_username", "cadence_password",
+                 "cf_access_client_id", "cf_access_client_secret",
                  "spotify_client_id", "spotify_client_secret", "spotify_refresh_token",
-                 "proxy_password")
+                 "proxy_user", "proxy_password")
 ENC_PREFIX = "enc:"
 CRYPTPROTECT_UI_FORBIDDEN = 0x1  # this is a --noconsole tray app: never let DPAPI pop a dialog
 
@@ -614,8 +639,9 @@ def save_config(config):
         #   - there is never a second copy of a credential to find and rotate;
         #   - deleting a line from the .env returns that setting to its default, rather than
         #     resurrecting whatever value happened to be saved under it before.
-        # `cadence_username` / `cadence_password` need no case here: they are not in DEFAULTS, so
-        # `stored` never had them.
+        # `cadence_username` / `cadence_password` ARE in DEFAULTS (the sign-in window stores them),
+        # so they go through this loop like everything else: typed into the window they are kept,
+        # supplied by the .env they are written back as "" and stay in the one file that owns them.
         for key, value in env_config().items():
             if key == "hotkeys":
                 stored["hotkeys"] = {**stored["hotkeys"],
