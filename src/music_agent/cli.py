@@ -29,7 +29,6 @@ what you type into its Settings window is what it uses.
 import argparse
 import getpass
 import logging
-import os
 import sys
 import time
 
@@ -49,6 +48,7 @@ SHOWN_ANYWAY = (
     "cf_access_client_id",   # the *id* half of a service token; useless without its secret
     "spotify_client_id",     # visible in the Spotify dashboard; pairs with a secret that is not
     "proxy_user",            # same: sealed on disk because it is an identity, but readable here
+    "proxy_url",             # sealed because a pasted address can carry user:pass@; printed redacted
 )
 SECRETS = tuple(field for field in config.SECRET_FIELDS if field not in SHOWN_ANYWAY)
 
@@ -240,8 +240,8 @@ def cmd_login(cfg, args):
         return
 
     if not cfg.get("cadence_url"):
-        _die(f"No Cadence server set — put DOMAIN in a .env beside the app, or run: "
-             f"python -m music_agent setup")
+        _die("No Cadence server set — put DOMAIN in a .env beside the app, or run: "
+             "python -m music_agent setup")
     me = _cadence_sign_in(client_from_config(cfg), cfg)
     print(f"Signed in as {me.get('username')}. Session saved to {config_path()}")
 
@@ -274,6 +274,10 @@ def cmd_get(cfg, args):
             _die(f"Unknown key {key!r}. Known: {', '.join(k for k in DEFAULTS if k != 'hotkeys')}")
         value = cfg.get(key, "")
         shown = ("set" if value else "") if key in SECRETS else value
+        if key == "proxy_url":
+            # `http://user:pass@proxy:8080` is an ordinary thing to paste into an address box, and
+            # this line is exactly what gets copied into a chat asking for help.
+            shown = config.redact_url(shown)
         print(f"{key} = {shown}{'   (.env)' if key in owned else ''}")
 
 
@@ -285,6 +289,13 @@ def cmd_set(cfg, args):
         # file, so this would have printed a confirmation and changed nothing at all.
         _die(f"{args.key} comes from {env_path()} and is not stored here. {_env_note()}")
     value = args.value
+    if value is None:
+        if args.key not in config.SECRET_FIELDS:
+            _die(f"Give a value: python -m music_agent set {args.key} VALUE")
+        # Prompted, not passed: an argument is visible to every other process on the machine while
+        # it runs, and it stays in the shell history afterwards. This is the only way to set a
+        # password from the CLI now.
+        value = getpass.getpass(f"{args.key}: ")
     if args.key == "mode" and value not in MODES:
         _die(f"mode must be one of {', '.join(MODES)}")
     if args.key == "cadence_url":
@@ -458,7 +469,9 @@ def build_parser():
 
     set_ = sub.add_parser("set", help="set one config field")
     set_.add_argument("key")
-    set_.add_argument("value")
+    set_.add_argument("value", nargs="?",
+                      help="omit it for a credential and you will be prompted instead, so it never "
+                           "reaches your shell history")
     set_.set_defaults(handler=cmd_set)
 
     hotkeys = sub.add_parser("hotkeys", help="list hotkeys, rebind one, or 'reset'")

@@ -2,7 +2,9 @@
 
 from music_agent.cli import *  # noqa: F401,F403 — the public surface under test
 from music_agent.cli import (  # noqa: F401 — including the private names it exercises
-    ACTIONS, DEFAULT_HOTKEYS, MODES, SECRETS, SHOWN_ANYWAY, VERBS, build_parser, cmd_hotkeys, cmd_run, cmd_set, config, hotkey_action, load_config, os)
+    ACTIONS, DEFAULT_HOTKEYS, MODES, SECRETS, SHOWN_ANYWAY, VERBS, build_parser, cmd_hotkeys, cmd_run, cmd_set, config, hotkey_action, load_config)
+import os
+
 import music_agent.cli as MODULE
 
 
@@ -209,6 +211,38 @@ def test_logout_really_logs_out():
             with contextlib.redirect_stdout(printed):
                 MODULE.cmd_logout(config_module.load_config(), None)
             assert "will sign in again" in printed.getvalue(), printed.getvalue()
+    finally:
+        config_module.app_dir = real_app_dir
+        config_module.use_env(True)
+
+
+def test_set_prompts_for_a_credential_instead_of_taking_it_as_an_argument():
+    """A password passed as an argument is readable by every other process while the command runs,
+    and stays in the shell history afterwards. `set` takes credentials from a prompt now."""
+    import tempfile
+    from unittest import mock
+
+    from music_agent import config as config_module
+
+    parser = build_parser()
+    assert parser.parse_args(["set", "cadence_password"]).value is None, "the value must be optional"
+
+    real_app_dir = config_module.app_dir
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config_module.app_dir = lambda: d
+            config_module.use_env(False)
+            with mock.patch.object(MODULE.getpass, "getpass", return_value="typed-at-a-prompt") as ask:
+                cmd_set(load_config(), parser.parse_args(["set", "cadence_password"]))
+            assert ask.called, "a credential with no value must be prompted for"
+            assert load_config()["cadence_password"] == "typed-at-a-prompt"
+
+            # ...and a non-credential still needs its value, rather than silently prompting for one.
+            try:
+                cmd_set(load_config(), parser.parse_args(["set", "mode"]))
+                raise AssertionError("a missing value should have been refused")
+            except SystemExit:
+                pass
     finally:
         config_module.app_dir = real_app_dir
         config_module.use_env(True)

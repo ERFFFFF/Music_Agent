@@ -17,6 +17,7 @@ so everything below — hotkeys, tray, notifications — is mode-agnostic.
 
 import ctypes
 import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -43,10 +44,16 @@ def initialize_logging():
     os.makedirs(app_data_path, exist_ok=True)
     log_file = os.path.join(app_data_path, "music_agent_control.log")
     log_format = "%(asctime)s:%(levelname)s:%(message)s"
+    # Rotated, because nothing ever deleted it: DEBUG level, every launch, appended forever. The copy
+    # on this machine had reached 1.6 MB over two years — not a crisis, but a file that only grows is
+    # a file that eventually matters, and it holds your server address and account name.
+    # 1 MB x 2 keeps roughly the last few thousand launches' worth and can never exceed 3 MB.
+    #
     # sys.stdout is None in the --noconsole build (there is no console to write to), and a
     # StreamHandler over it raises inside logging on EVERY record — swallowed by handleError, so the
     # only symptom is the work. Only add the console handler when there is a console.
-    handlers = [logging.FileHandler(log_file, encoding="utf-8")]
+    handlers = [logging.handlers.RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=2,
+                                                     encoding="utf-8")]
     if sys.stdout is not None:
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(level=logging.DEBUG, format=log_format, handlers=handlers)

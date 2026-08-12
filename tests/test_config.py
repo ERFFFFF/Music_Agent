@@ -229,3 +229,71 @@ def test_config():
             for key, value in saved.items():
                 os.environ.pop(key, None) if value is None else os.environ.__setitem__(key, value)
     config.app_dir = real_app_dir
+
+
+def test_a_cli_run_with_a_dotenv_does_not_wipe_the_guis_stored_account():
+    """The one field pair where "what the .env supplies, the .env keeps" had to gain an exception.
+
+    Both front ends share cadence_config.txt when they share a folder. The GUI stores the account
+    there because it cannot read a .env at all; the CLI, running in the same folder with a .env that
+    carries USERNAME/PASSWORD, used to blank those fields on every save — so the tray app was back to
+    a sign-in window for an account it had just been given, over and over.
+
+    What must NOT happen instead: the .env's own password landing in the file. Both are asserted.
+    """
+    import tempfile
+
+    real_app_dir = config.app_dir
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config.app_dir = lambda: d
+
+            # 1. the GUI signs in and stores its account (no .env involved)
+            config.use_env(False)
+            cfg = load_config()
+            cfg.update({"cadence_url": "https://cadence.example", "cadence_username": "gui-user",
+                        "cadence_password": "gui-password"})
+            save_config(cfg)
+
+            # 2. a .env appears beside it, carrying a DIFFERENT account, and the CLI saves something
+            with open(os.path.join(d, ENV_FILENAME), "w", encoding="utf-8") as f:
+                f.write("DOMAIN=cadence.example\nUSERNAME=env-user\nPASSWORD=env-password\n")
+            config.use_env(True)
+            from_cli = load_config()
+            assert from_cli["cadence_username"] == "env-user", "the .env still wins while it is read"
+            from_cli["cadence_session"] = "a-cookie-the-cli-earned"
+            save_config(from_cli)
+
+            # 3. the GUI's account survived, and the .env's did not get written
+            raw = open(config_path(), encoding="utf-8").read()
+            assert "env-password" not in raw and "env-user" not in raw, "the .env leaked into the file"
+            config.use_env(False)
+            gui_sees = load_config()
+            assert gui_sees["cadence_username"] == "gui-user", gui_sees["cadence_username"]
+            assert gui_sees["cadence_password"] == "gui-password", "the GUI's account was wiped"
+    finally:
+        config.app_dir = real_app_dir
+        config.use_env(True)
+
+
+def test_a_proxy_address_with_credentials_in_it_is_sealed_and_redacted():
+    """`http://user:pass@proxy:8080` is an ordinary thing to paste into an address box, and it was
+    the last place a credential could sit in the clear on disk."""
+    import tempfile
+
+    real_app_dir = config.app_dir
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            config.app_dir = lambda: d
+            config.use_env(False)
+            cfg = load_config()
+            cfg["proxy_url"] = "http://corp-user:corp-secret@proxy.company.com:8080"
+            save_config(cfg)
+            raw = open(config_path(), encoding="utf-8").read()
+            assert "corp-secret" not in raw, "a pasted proxy password is on disk in the clear"
+            assert json.loads(raw)["proxy_url"].startswith(ENC_PREFIX)
+            assert load_config()["proxy_url"] == cfg["proxy_url"], "...but it must still round-trip"
+            assert redact_url(cfg["proxy_url"]) == "http://corp-user:***@proxy.company.com:8080"
+    finally:
+        config.app_dir = real_app_dir
+        config.use_env(True)

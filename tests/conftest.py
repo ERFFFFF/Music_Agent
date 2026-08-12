@@ -9,9 +9,28 @@ A single hidden root, created once and kept for the session, keeps the library l
 shown and never used; it exists so that destroying a window is not also destroying Tk itself.
 """
 
+import os
 import sys
 
 import pytest
+
+PROXY_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY")
+
+
+@pytest.fixture(autouse=True)
+def _proxy_env_is_not_shared():
+    """No test may leave a proxy behind in the environment.
+
+    `config.load_config()` applies the proxy as a side effect — that is the design, so that every
+    entry point gets one without knowing it exists — which means ANY test that loads a config with a
+    proxy in it exports `HTTPS_PROXY` for the rest of the process. It happened: a new config test set
+    a proxy, and `test_httpmin`, several files later, tried to reach its own loopback server through
+    `proxy.company.com:8080` and failed with something that looked nothing like the cause.
+    """
+    before = {name: os.environ.get(name) for name in PROXY_VARS}
+    yield
+    for name, value in before.items():
+        os.environ.pop(name, None) if value is None else os.environ.__setitem__(name, value)
 
 
 @pytest.fixture(scope="session", autouse=True)

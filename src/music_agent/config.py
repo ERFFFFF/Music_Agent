@@ -313,10 +313,22 @@ def normalize_url(raw):
 # another Windows user and these fields won't decrypt, so the app treats them as empty and asks you to
 # sign in once there. `mode` and `hotkeys` are deliberately left plaintext so a moved copy still keeps
 # its shortcuts and doesn't look corrupt.
+#
+# `proxy_url` is in here even though an address is not a secret: `http://user:pass@proxy:8080` is an
+# ordinary thing to paste into an address box, and that was the last place a credential could sit in
+# the clear. The cost is that a portable copy carried to another machine asks for the proxy again
+# too — which the sign-in window can now do, and which a machine on a different network would need
+# anyway. It is printed through `redact_url` wherever it is shown.
 SECRET_FIELDS = ("cadence_url", "cadence_session", "cadence_username", "cadence_password",
                  "cf_access_client_id", "cf_access_client_secret",
                  "spotify_client_id", "spotify_client_secret", "spotify_refresh_token",
-                 "proxy_user", "proxy_password")
+                 "proxy_url", "proxy_user", "proxy_password")
+# The fields the GUI owns outright: it collects them in its own window, keeps them in its own file
+# and cannot see a .env. `save_config` will not blank these when a .env happens to supply the same
+# setting — see the loop there for why the "what the .env supplies, the .env keeps" rule cannot apply
+# to a value whose only reader is the front end that has no .env.
+GUI_OWNED = ("cadence_username", "cadence_password")
+
 ENC_PREFIX = "enc:"
 CRYPTPROTECT_UI_FORBIDDEN = 0x1  # this is a --noconsole tray app: never let DPAPI pop a dialog
 
@@ -639,13 +651,20 @@ def save_config(config):
         #   - there is never a second copy of a credential to find and rotate;
         #   - deleting a line from the .env returns that setting to its default, rather than
         #     resurrecting whatever value happened to be saved under it before.
-        # `cadence_username` / `cadence_password` ARE in DEFAULTS (the sign-in window stores them),
-        # so they go through this loop like everything else: typed into the window they are kept,
-        # supplied by the .env they are written back as "" and stay in the one file that owns them.
+        # TWO exceptions, and the reason is that the premise above stops holding for them.
+        # `cadence_username` / `cadence_password` are the GUI's own store, and the GUI cannot read a
+        # .env at all (config.use_env) — so its copy is not a second copy of anything, and blanking
+        # it was destructive: run the CLI once in a folder whose .env carries the account, and the
+        # tray app there is back to a sign-in window for an account it had been given. What is on
+        # DISK is kept for those two, still sealed, still never the .env's value — which is the
+        # property that mattered. Both front ends sharing a folder is the only way to see it.
+        on_disk = _read_json(path)
         for key, value in env_config().items():
             if key == "hotkeys":
                 stored["hotkeys"] = {**stored["hotkeys"],
                                      **{action: DEFAULT_HOTKEYS[action] for action in value}}
+            elif key in GUI_OWNED and on_disk.get(key):
+                stored[key] = on_disk[key]      # already encrypted; _encrypt below passes it through
             elif key in DEFAULTS:
                 stored[key] = DEFAULTS[key]
         for key in SECRET_FIELDS:
