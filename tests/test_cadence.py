@@ -2,7 +2,7 @@
 
 from music_agent.backends.cadence import *  # noqa: F401,F403 — the public surface under test
 from music_agent.backends.cadence import (  # noqa: F401 — including the private names it exercises
-    CadenceClient, CadenceController, CadenceError, _blocked_by_access, normalize_url, sys, time)
+    CadenceClient, CadenceController, CadenceError, _blocked_by_access, normalize_url)
 import music_agent.backends.cadence as MODULE
 
 

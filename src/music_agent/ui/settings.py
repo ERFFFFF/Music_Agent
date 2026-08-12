@@ -9,7 +9,7 @@ from music_agent import config as config_module
 
 from music_agent.backends.cadence import client_from_config
 from music_agent.config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
-from music_agent.ui.widgets import secret_entry
+from music_agent.ui.widgets import secret_entry, set_enabled
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -145,7 +145,7 @@ class SettingsWindow:
         sep.pack(fill="x", padx=16, pady=(0, 4))
 
         # Keybind rows
-        for i, (action_id, label) in enumerate(ACTION_LABELS.items()):
+        for action_id, label in ACTION_LABELS.items():
             current_hotkey = self.config["hotkeys"].get(
                 action_id, DEFAULT_HOTKEYS.get(action_id, "")
             )
@@ -360,7 +360,7 @@ class SettingsWindow:
                      font=ctk.CTkFont(size=11), justify="left",
                      text_color=("gray50", "gray60")).pack(anchor="w", padx=20, pady=(0, 8))
 
-        self.proxy_vars = {}
+        self.proxy_vars, self.proxy_boxes = {}, {}
         for field, label, secret in (("proxy_url", "Proxy address", False),
                                      ("proxy_user", "Username", False),
                                      ("proxy_password", "Password", True)):
@@ -375,12 +375,13 @@ class SettingsWindow:
             if secret:
                 holder = ctk.CTkFrame(row, fg_color="transparent")
                 holder.pack(side="left", padx=(10, 0))
-                secret_entry(holder, var, width=300, height=32)
+                self.proxy_boxes[field] = secret_entry(holder, var, width=300, height=32)
             else:
-                ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
-                             font=ctk.CTkFont(size=13),
-                             placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "",
-                             ).pack(side="left", padx=(10, 0))
+                entry = ctk.CTkEntry(row, textvariable=var, width=300, height=32, corner_radius=8,
+                                     font=ctk.CTkFont(size=13),
+                                     placeholder_text="proxy.company.com:8080" if field == "proxy_url" else "")
+                entry.pack(side="left", padx=(10, 0))
+                self.proxy_boxes[field] = entry
 
         row = ctk.CTkFrame(card, fg_color="transparent")
         row.pack(fill="x", padx=20, pady=(6, 14))
@@ -390,8 +391,26 @@ class SettingsWindow:
         check = ctk.CTkCheckBox(
             row, text="Sign in to the proxy as my Windows user (NTLM / Kerberos)",
             variable=self.proxy_auth_var, onvalue="on", offvalue="off",
-            font=ctk.CTkFont(size=12), checkbox_width=18, checkbox_height=18)
+            font=ctk.CTkFont(size=12), checkbox_width=18, checkbox_height=18,
+            command=self._refresh_proxy_account)
         check.pack(side="left")
+        self.proxy_note = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11), justify="left",
+                                       text_color=("gray50", "gray60"))
+        self.proxy_note.pack(anchor="w", padx=20, pady=(0, 12))
+        self._refresh_proxy_account()    # already on in the config: open greyed out, not live
+
+    def _refresh_proxy_account(self):
+        """The account boxes follow the checkbox.
+
+        With Windows doing the signing in, the transport strips the proxy to host:port and answers
+        the challenge over SSPI — so a username and password typed here would be silently ignored,
+        which is worse than not offering them. Greyed, with a line saying why.
+        """
+        windows_user = self.proxy_auth_var.get() == "on"
+        for field in ("proxy_user", "proxy_password"):
+            set_enabled(self.proxy_boxes[field], not windows_user)
+        self.proxy_note.configure(text="Windows signs in to the proxy for you — these two are not used."
+                                       if windows_user else "")
 
     def _refresh_account(self):
         """Say what the selected mode needs and whether it has it. Local checks only (a file exists or
@@ -477,6 +496,7 @@ class SettingsWindow:
             for field, var in self.proxy_vars.items():
                 var.set(self.config.get(field, ""))
             self.proxy_auth_var.set("on" if (self.config.get("proxy_auth") or "").strip() else "off")
+            self._refresh_proxy_account()   # ...including whether those boxes are greyed out
             self._refresh_account()
 
     def _start_capture(self, action_id):

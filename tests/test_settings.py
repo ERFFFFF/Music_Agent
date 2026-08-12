@@ -120,6 +120,22 @@ def test_settings_shows_the_saved_proxy_and_picks_up_one_saved_elsewhere():
                         if b.cget("text") in (widgets.EYE_SHOW, widgets.EYE_HIDE)]
                 assert len(masked) == 1 and len(eyes) == 1, (len(masked), len(eyes))
 
+                # Ticking "sign in as my Windows user" takes the account boxes away: that transport
+                # strips the proxy to host:port and answers over SSPI, so anything typed in them
+                # would be silently ignored. The ADDRESS stays live — it is still used.
+                assert win.proxy_boxes["proxy_user"].cget("state") == "normal"
+                win.proxy_auth_var.set("on")
+                win._refresh_proxy_account()
+                assert win.proxy_boxes["proxy_user"].cget("state") == "disabled"
+                assert win.proxy_boxes["proxy_password"].cget("state") == "disabled"
+                assert win.proxy_boxes["proxy_url"].cget("state") == "normal", \
+                    "the address is still used — greying it would be a lie"
+                assert "not used" in win.proxy_note.cget("text"), "a greyed box needs a reason"
+                win.proxy_auth_var.set("off")
+                win._refresh_proxy_account()
+                assert win.proxy_boxes["proxy_password"].cget("state") == "normal", "must come back"
+                assert win.proxy_note.cget("text") == ""
+
                 # Something else writes a different proxy while this window is open — which is what
                 # the sign-in window's Proxy dialog does, through _with_hidden_window.
                 latest = config.load_config()

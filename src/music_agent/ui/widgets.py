@@ -44,4 +44,29 @@ def secret_entry(row, var, width=260, height=34, font_size=13):
 
     button.configure(command=toggle)
     button.pack(side="left", padx=(6, 0))
+    entry._eye = button        # so set_enabled() below can grey the pair together
     return entry
+
+
+# What "greyed out" has to look like. `state="disabled"` alone barely changes a CTkEntry on the dark
+# theme — the text stays as bright as a live field, so the box reads as editable and simply refuses
+# to take a keystroke, which is worse than either state on its own.
+DISABLED_TEXT = ("gray55", "gray45")
+DISABLED_BORDER = ("gray75", "gray28")
+
+
+def set_enabled(entry, enabled):
+    """Enable or disable an entry, and make it LOOK it. Greys its eye button too, if it has one.
+
+    The live colours are read off the widget the first time and kept, so this restores whatever the
+    theme actually uses rather than a hardcoded guess at it.
+    """
+    if not hasattr(entry, "_live_colors"):
+        entry._live_colors = (entry.cget("text_color"), entry.cget("border_color"))
+    text_color, border_color = entry._live_colors
+    entry.configure(state="normal" if enabled else "disabled",
+                    text_color=text_color if enabled else DISABLED_TEXT,
+                    border_color=border_color if enabled else DISABLED_BORDER)
+    eye = getattr(entry, "_eye", None)
+    if eye is not None:
+        eye.configure(state="normal" if enabled else "disabled")

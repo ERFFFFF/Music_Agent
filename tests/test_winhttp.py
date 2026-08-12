@@ -2,7 +2,9 @@
 
 from music_agent.net.winhttp import *  # noqa: F401,F403 — the public surface under test
 from music_agent.net.winhttp import (  # noqa: F401 — including the private names it exercises
-    RequestError, Response, _json, available, request)
+    RequestError, Response, available, request)
+import json as _json
+
 import music_agent.net.winhttp as MODULE
 
 

@@ -19,7 +19,7 @@ import customtkinter as ctk
 from music_agent.backends.cadence import CadenceError, client_from_config, normalize_url
 from music_agent.config import (DEFAULT_REDIRECT_URI, apply_proxy, config_path, load_config,
                     save_config, save_spotify_credentials)
-from music_agent.ui.widgets import secret_entry
+from music_agent.ui.widgets import secret_entry, set_enabled
 
 _lock = threading.Lock()
 
@@ -87,10 +87,11 @@ class LoginWindow:
 
         # Pre-filled from what is already stored, decrypted. An app that made you retype a server
         # address it has known for months was treating its own config file as write-only.
-        self.url = _field(card, "Server", self.cfg.get("cadence_url", ""),
+        self.url, _ = _field(card, "Server", self.cfg.get("cadence_url", ""),
                           placeholder="https://cadence.your-domain.com")
-        self.user = _field(card, "Username", self.cfg.get("cadence_username", ""))
-        self.password = _field(card, "Password", self.cfg.get("cadence_password", ""), secret=True)
+        self.user, _ = _field(card, "Username", self.cfg.get("cadence_username", ""))
+        self.password, _ = _field(card, "Password", self.cfg.get("cadence_password", ""),
+                                  secret=True)
 
         ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
@@ -263,10 +264,10 @@ class SpotifySetupWindow:
 
         card = ctk.CTkFrame(frame, corner_radius=12)
         card.pack(fill="x")
-        self.client_id = _field(card, "Client ID", cfg.get("spotify_client_id", ""))
-        self.client_secret = _field(card, "Client Secret", cfg.get("spotify_client_secret", ""),
-                                    secret=True)
-        self.redirect = _field(card, "Redirect URI",
+        self.client_id, _ = _field(card, "Client ID", cfg.get("spotify_client_id", ""))
+        self.client_secret, _ = _field(card, "Client Secret", cfg.get("spotify_client_secret", ""),
+                                       secret=True)
+        self.redirect, _ = _field(card, "Redirect URI",
                                cfg.get("spotify_redirect_uri") or DEFAULT_REDIRECT_URI)
         ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
 
@@ -344,8 +345,9 @@ def cloudflare_dialog(parent, cfg, id_var=None, secret_var=None):
 
     card = ctk.CTkFrame(frame, corner_radius=12)
     card.pack(fill="x")
-    local_id = _field(card, "Client Id", (id_var.get() if id_var else cfg.get("cf_access_client_id", "")))
-    local_secret = _field(card, "Client Secret",
+    local_id, _ = _field(card, "Client Id",
+                         (id_var.get() if id_var else cfg.get("cf_access_client_id", "")))
+    local_secret, _ = _field(card, "Client Secret",
                           (secret_var.get() if secret_var else cfg.get("cf_access_client_secret", "")),
                           secret=True)
     ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
@@ -425,17 +427,33 @@ def proxy_dialog(parent, cfg):
 
     card = ctk.CTkFrame(frame, corner_radius=12)
     card.pack(fill="x")
-    address = _field(card, "Proxy address", cfg.get("proxy_url", ""),
-                     placeholder="proxy.company.com:8080")
-    user = _field(card, "Username", cfg.get("proxy_user", ""))
-    password = _field(card, "Password", cfg.get("proxy_password", ""), secret=True)
+    address, _ = _field(card, "Proxy address", cfg.get("proxy_url", ""),
+                        placeholder="proxy.company.com:8080")
+    user, user_box = _field(card, "Username", cfg.get("proxy_user", ""))
+    password, password_box = _field(card, "Password", cfg.get("proxy_password", ""), secret=True)
 
     row = ctk.CTkFrame(card, fg_color="transparent")
-    row.pack(fill="x", padx=20, pady=(2, 12))
+    row.pack(fill="x", padx=20, pady=(2, 4))
     auth = ctk.StringVar(master=row, value="on" if (cfg.get("proxy_auth") or "").strip() else "off")
+    hint = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11), justify="left",
+                        text_color=("gray50", "gray60"))
+
+    def account_boxes():
+        """Windows signs in for you, so the two account boxes are not just unused — they are
+        MISLEADING. The transport this switches to strips the proxy down to host:port and answers
+        the challenge over SSPI, so anything typed here would be quietly ignored. Say so, and take
+        the boxes away."""
+        windows_user = auth.get() == "on"
+        for box in (user_box, password_box):
+            set_enabled(box, not windows_user)
+        hint.configure(text="Windows signs in to the proxy for you — these two are not used."
+                            if windows_user else "")
+
     ctk.CTkCheckBox(row, text="Sign in to the proxy as my Windows user (NTLM / Kerberos)",
                     variable=auth, onvalue="on", offvalue="off", font=ctk.CTkFont(size=12),
-                    checkbox_width=18, checkbox_height=18).pack(side="left")
+                    checkbox_width=18, checkbox_height=18, command=account_boxes).pack(side="left")
+    hint.pack(anchor="w", padx=20, pady=(0, 12))
+    account_boxes()                      # a config that already has it on opens greyed out, not live
 
     error = ctk.CTkLabel(frame, text="", font=ctk.CTkFont(size=12),
                          text_color=("#b3261e", "#f2b8b5"), wraplength=430, justify="left")
@@ -478,7 +496,12 @@ def proxy_dialog(parent, cfg):
 
 
 def _field(parent, label, value, secret=False, placeholder=None):
-    """One labelled entry row, shared by every window here. `secret=True` masks it and adds the eye.
+    """One labelled entry row, shared by every window here. Returns `(variable, entry)`.
+
+    The widget comes back too because two callers have to disable a box — a proxy account Windows is
+    signing in for is a box you must not be able to type into — and digging the entry out of the
+    row's children afterwards is exactly the kind of thing that breaks the day the layout changes.
+    `secret=True` masks it and adds the eye.
 
     `master=row` is not optional. A StringVar with no master attaches to tkinter's `_default_root`,
     which is whichever root was created FIRST and is only released when that root is destroyed. Opened
@@ -492,11 +515,12 @@ def _field(parent, label, value, secret=False, placeholder=None):
     ctk.CTkLabel(row, text=label, font=ctk.CTkFont(size=13), width=120, anchor="w").pack(side="left")
     var = ctk.StringVar(master=row, value=value)
     if secret:
-        secret_entry(row, var, width=260)
+        entry = secret_entry(row, var, width=260)
     else:
-        ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8,
-                     placeholder_text=placeholder, font=ctk.CTkFont(size=13)).pack(side="left")
-    return var
+        entry = ctk.CTkEntry(row, textvariable=var, width=260, height=34, corner_radius=8,
+                             placeholder_text=placeholder, font=ctk.CTkFont(size=13))
+        entry.pack(side="left")
+    return var, entry
 
 
 def choose_mode(cfg=None):

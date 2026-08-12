@@ -22,7 +22,6 @@ Microsoft documents. Expect to confirm that part on the network it was written f
 
 import ctypes
 import email.parser
-import json as _json
 import os
 import urllib.parse
 import urllib.request

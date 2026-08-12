@@ -15,8 +15,6 @@ the hotkey/tray layer in ui/tray.py is the Windows-only part.
 """
 
 import logging
-import sys
-import time
 from urllib.parse import urlsplit
 
 from music_agent.net import httpmin
@@ -163,13 +161,13 @@ class CadenceClient:
             return {}          # 204s are normal here
         try:
             return r.json()
-        except ValueError:
+        except ValueError as e:
             # A non-JSON body is Sablier's wake page: Cadence scales to zero after ~30 min idle and
             # answers 200 text/html while it starts (measured). Say so — swallowing it as "{}" made a
             # sleeping server look like a server with nothing playing. No retry on purpose: if the
             # stack is asleep then no browser tab is open either, so there is nothing to perform the
             # command anyway. Press the key again once Cadence is up.
-            raise CadenceError("Cadence is waking up — try again in a few seconds.")
+            raise CadenceError("Cadence is waking up — try again in a few seconds.") from e
 
     # ---------------------------------------------------------------- public API
     def login(self, username, password):
