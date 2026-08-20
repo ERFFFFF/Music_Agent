@@ -33,7 +33,10 @@ python -m pip install -r requirements-gui.txt $PyInstaller
 # there. The icon is added as data too, because find_icon() looks for it beside the exe AND in _MEIPASS.
 # --paths src: the package lives under src/ now, so PyInstaller has to be told where to find it.
 # This keeps the build working WITHOUT `pip install -e .` first, which a clean checkout will not have.
-pyinstaller `
+# `python -m PyInstaller` rather than the bare `pyinstaller` shim, for the same reason the installer
+# script uses it: it is guaranteed to be the interpreter the line above just installed into, shim on
+# PATH or not.
+python -m PyInstaller `
     --onefile `
     --noconsole `
     --name "MusicAgent_portable" `

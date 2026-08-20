@@ -35,8 +35,12 @@ Write-Host "Building version $Version" -ForegroundColor Cyan
 # and [Files] then shipped it to every user who ran the installer. The app asks for credentials at
 # first launch now (config.py), so nothing secret belongs in the bundle. PyInstaller rewrites the
 # .spec from these flags on every run, so there is no stale file left to re-poison the build.
+# `python -m PyInstaller`, not `py -m PyInstaller`. The line above installs into whatever `python`
+# is, and `py` is the LAUNCHER - on a machine with more than one interpreter it happily picks a
+# different one, which then has no PyInstaller in it. That is not hypothetical: it is exactly how
+# this failed on a CI runner that had 3.12 (with the packages) and 3.14 (without) side by side.
 Write-Host "Building with PyInstaller..." -ForegroundColor Cyan
-py -m PyInstaller `
+python -m PyInstaller `
     --onedir `
     --noconsole `
     --noconfirm `
