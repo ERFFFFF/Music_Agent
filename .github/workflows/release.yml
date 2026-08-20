@@ -1,0 +1,93 @@
+# Build the Windows binaries and attach them to a release.
+#
+# This exists because the two build scripts only run on Windows — PyInstaller freezes for the platform
+# it runs on, and Inno Setup is a Windows compiler — so a release cut from anywhere else has notes and
+# nothing to download. A tag now builds on a real Windows runner and uploads both artifacts itself.
+#
+#   push a v* tag        -> builds and uploads to that tag's release
+#   run it by hand       -> same, for a tag that already exists (Actions > Build Windows binaries)
+#
+# The release notes are NOT written here. A release is a thing someone writes; this only puts the
+# binaries on it.
+name: Build Windows binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and upload to (e.g. v4.6.0)"
+        required: true
+
+permissions:
+  contents: write        # to upload assets onto the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      # The dispatch input is a string a human types, and it goes on to be a git ref and a shell
+      # argument. Only someone with write access can dispatch, so this is not a hostile input — but
+      # "not hostile" is not "well-formed", and both of those uses deserve a value that has been
+      # looked at. Everything downstream reads this step's output, never the raw input.
+      - name: Work out which tag to build
+        id: which
+        env:
+          REQUESTED: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $tag = if ($env:REQUESTED) { $env:REQUESTED } else { "${{ github.ref_name }}" }
+          if ($tag -notmatch '^v[0-9][0-9A-Za-z.\-+]*$') { throw "not a version tag: '$tag'" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.which.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          # >=3.10 from the app, <3.16 from PyInstaller (see requirements-gui.txt). Pinned rather than
+          # "3.x" so a new interpreter cannot silently change what ships.
+          python-version: "3.12"
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      # The installer FIRST: build_installer.ps1 starts by deleting dist\, so building it after the
+      # portable exe would throw that exe away.
+      - name: Build the installer
+        run: .\installer\build_installer.ps1
+
+      - name: Build the portable exe
+        run: .\build_portable.ps1
+
+      - name: Check both artifacts exist
+        # PyInstaller can fail in ways that still exit 0, and an empty upload is worse than a failed
+        # build: the release looks complete and the download is missing.
+        shell: pwsh
+        run: |
+          $missing = @("dist\MusicAgent_portable.exe", "installer_output\MusicAgentSetup.exe") |
+                     Where-Object { -not (Test-Path $_) }
+          if ($missing) { throw "build produced nothing at: $($missing -join ', ')" }
+          Get-ChildItem dist\MusicAgent_portable.exe, installer_output\MusicAgentSetup.exe |
+            Select-Object Name, Length
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.which.outputs.tag }}
+        # --clobber so a re-run replaces the assets instead of failing on "already exists".
+        shell: pwsh
+        run: gh release upload "$env:TAG" dist\MusicAgent_portable.exe installer_output\MusicAgentSetup.exe --clobber
+
+      # Kept for a build that was NOT for a release (a dispatch against a tag whose release was
+      # deleted, say) — the upload above would fail there, and the binaries would otherwise be lost.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MusicAgent-windows
+          path: |
+            dist/MusicAgent_portable.exe
+            installer_output/MusicAgentSetup.exe
+          if-no-files-found: warn
