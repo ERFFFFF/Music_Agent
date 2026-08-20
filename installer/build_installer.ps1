@@ -71,10 +71,15 @@ $InnoPaths = @(
     "C:\Program Files\Inno Setup 6\ISCC.exe"
 )
 
-# Also check scoop
-$ScoopPath = & { scoop prefix inno-setup 2>$null } 2>$null
-if ($ScoopPath) {
-    $InnoPaths = @("$ScoopPath\ISCC.exe") + $InnoPaths
+# Also check scoop, IF scoop is even installed. The redirections here used to be the whole guard, and
+# they are not one: with $ErrorActionPreference = "Stop" at the top, a command that does not exist is
+# a TERMINATING error, so on any machine without scoop - which is most of them, including a CI runner
+# - this line killed the build right after PyInstaller had finished. Ask first.
+if (Get-Command scoop -ErrorAction SilentlyContinue) {
+    $ScoopPath = & scoop prefix inno-setup 2>$null
+    if ($ScoopPath) {
+        $InnoPaths = @("$ScoopPath\ISCC.exe") + $InnoPaths
+    }
 }
 
 $ISCC = $null
