@@ -19,7 +19,7 @@ import customtkinter as ctk
 from music_agent.backends.cadence import CadenceError, client_from_config, normalize_url
 from music_agent.config import (DEFAULT_REDIRECT_URI, apply_proxy, config_path, load_config,
                     save_config, save_spotify_credentials)
-from music_agent.ui.widgets import secret_entry, set_enabled
+from music_agent.ui.widgets import center, new_root, secret_entry, set_enabled
 
 _lock = threading.Lock()
 
@@ -30,17 +30,10 @@ class LoginWindow:
         self.cfg = cfg
         self.result = None
 
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self.root = ctk.CTk()
-        self.root.title("Music Agent — Sign in to Cadence")
-        self.root.resizable(False, False)
+        self.root = new_root("Music Agent — Sign in to Cadence")
         self.root.protocol("WM_DELETE_WINDOW", self._cancel)
         self._build()
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
-        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
-        self.root.geometry(f"+{x}+{y}")
+        center(self.root)
         self.root.mainloop()
 
     def _build(self):
@@ -181,11 +174,7 @@ class ChooseModeWindow:
 
     def __init__(self, current):
         self.result = None
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self.root = ctk.CTk()
-        self.root.title("Music Agent — Setup")
-        self.root.resizable(False, False)
+        self.root = new_root("Music Agent — Setup")
         self.root.protocol("WM_DELETE_WINDOW", self._cancel)
 
         frame = ctk.CTkFrame(self.root, fg_color="transparent")
@@ -207,10 +196,7 @@ class ChooseModeWindow:
         ctk.CTkLabel(frame, text=f"Currently: {current}", font=ctk.CTkFont(size=11),
                      text_color=("gray55", "gray50")).pack(anchor="w", pady=(6, 0))
 
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
-        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
-        self.root.geometry(f"+{x}+{y}")
+        center(self.root)
         self.root.mainloop()
 
     def _option(self, parent, title, blurb, mode, primary):
@@ -246,11 +232,7 @@ class SpotifySetupWindow:
         self.cfg = cfg
         self.result = False
 
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
-        self.root = ctk.CTk()
-        self.root.title("Music Agent — Spotify credentials")
-        self.root.resizable(False, False)
+        self.root = new_root("Music Agent — Spotify credentials")
         self.root.protocol("WM_DELETE_WINDOW", self._cancel)
 
         frame = ctk.CTkFrame(self.root, fg_color="transparent")
@@ -289,10 +271,7 @@ class SpotifySetupWindow:
                       command=self._save).pack(side="right", padx=(0, 10))
         self.root.bind("<Return>", lambda _e: self._save())
 
-        self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - (self.root.winfo_width() // 2)
-        y = (self.root.winfo_screenheight() // 2) - (self.root.winfo_height() // 2)
-        self.root.geometry(f"+{x}+{y}")
+        center(self.root)
         self.root.mainloop()
 
     def _save(self):

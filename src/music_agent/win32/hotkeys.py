@@ -72,8 +72,8 @@ def parse(combo):
     return mods | MOD_NOREPEAT, key
 
 
-def listen(bindings, on_error=None, poll_ms=250):
-    """Register `{combo: callable}` and pump messages until KeyboardInterrupt.
+def listen(bindings, on_error=None, poll_ms=250, stop=None, ready=None):
+    """Register `{combo: callable}` and pump messages until KeyboardInterrupt (or `stop` is set).
 
     A combination that will not register is reported through `on_error(combo, message)` and skipped —
     one clash must not take the other four down with it. Returns the number that bound.
@@ -81,6 +81,13 @@ def listen(bindings, on_error=None, poll_ms=250):
     `poll_ms` is why this waits rather than calling `GetMessageW`: that blocks inside the OS with no
     Python bytecode running, so Ctrl+C would not be noticed until the next hotkey press. Waiting in
     bounded slices costs nothing measurable and makes Ctrl+C land within one slice.
+
+    `stop` is a `threading.Event` for the tray app, which has no Ctrl+C: saving Settings rebinds the
+    hotkeys, and because registration is per-THREAD the only way to change them is to end this loop
+    and start a new one. Checked once per slice, so it takes effect within `poll_ms`.
+
+    `ready` is a `threading.Event` set once registration is done, so a caller on another thread can
+    wait for the count instead of guessing.
     """
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT]
@@ -104,11 +111,13 @@ def listen(bindings, on_error=None, poll_ms=250):
             continue
         registered[hotkey_id] = callback
 
+    if ready is not None:
+        ready.set()
     if not registered:
         return 0
     msg = wintypes.MSG()
     try:
-        while True:
+        while stop is None or not stop.is_set():
             user32.MsgWaitForMultipleObjects(0, None, False, poll_ms, QS_ALLINPUT)
             while user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
                 if msg.message == WM_HOTKEY and msg.wParam in registered:

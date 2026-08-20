@@ -1,4 +1,4 @@
-"""The one widget both windows needed: a masked entry with an eye that reveals it.
+"""The bits every window in the app needs: how to build a root, how to place it, and the masked entry.
 
 Lives in its own module because `ui/settings.py` and `ui/login.py` both build secret fields and
 neither should have to import the other — settings.py deliberately keeps `login` out of its
@@ -10,6 +10,9 @@ all, so the obvious 👁 (U+1F441) raises `character U+1F441 is above the range 
 moment the button is created. ◉ and ⌽ are U+25C9 / U+233D, render in Segoe UI, and were checked on
 screen rather than assumed.
 """
+
+import logging
+import tkinter
 
 import customtkinter as ctk
 
@@ -70,3 +73,64 @@ def set_enabled(entry, enabled):
     eye = getattr(entry, "_eye", None)
     if eye is not None:
         eye.configure(state="normal" if enabled else "disabled")
+
+
+def new_root(title):
+    """A CTk root that behaves. All four windows in this app build their own, on their own thread, and
+    each was missing the same three things — every one of which fails as "the window just did not
+    appear", with nothing written down anywhere:
+
+    * **report_callback_exception.** Tk hands it every exception raised inside a callback, and the
+      default prints to a stderr that does not exist in the --noconsole build.
+    * **tkinter._default_root.** `CTkFont()` takes no master and resolves it. A window built while an
+      older root is still alive would otherwise construct its fonts against another (possibly dead)
+      Tcl interpreter, which raises mid-build. Same hazard the StringVar `master=` note guards
+      against, one level up.
+    * **placement** — see center() below.
+    """
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    root = ctk.CTk()
+    root.report_callback_exception = lambda exc, val, tb: logging.error(
+        "Tk callback failed in %r", title, exc_info=(exc, val, tb))
+    tkinter._default_root = root
+    root.title(title)
+    root.resizable(False, False)
+    return root
+
+
+def center(root):
+    """Place the window by its REQUESTED size, then bring it to the front once it exists.
+
+    `winfo_width()` on a window that has not been mapped yet is **1**, so `screenwidth/2 - width/2`
+    put the top-left corner at the exact centre of the PRIMARY monitor and the window hung off the
+    bottom-right — on a multi-monitor desktop, sometimes entirely off-screen. The lift is scheduled
+    rather than called because anything done before `mainloop()` is undone when the window is finally
+    mapped, and a fresh Tk root does not come forward over a full-screen browser on its own.
+    """
+    root.update_idletasks()
+    w, h = root.winfo_reqwidth(), root.winfo_reqheight()
+    x = max(0, (root.winfo_screenwidth() - w) // 2)
+    y = max(0, (root.winfo_screenheight() - h) // 3)
+    root.geometry(f"+{x}+{y}")
+
+    def raise_it():
+        try:
+            root.deiconify()
+            root.attributes("-topmost", True)
+            root.after(200, lambda: root.attributes("-topmost", False))
+            root.lift()
+            root.focus_force()
+        except Exception as e:  # noqa: BLE001 — a window mid-destroy must not take the app down
+            logging.warning("could not raise %r: %s", title_of(root), e)
+
+    root.after(50, raise_it)
+    logging.info("window %r at +%d+%d (%dx%d)", title_of(root), x, y, w, h)
+
+
+def title_of(root):
+    """The window's title, or "?" — only ever used in a log line, so it must not be able to raise."""
+    try:
+        return root.title()
+    except Exception:  # noqa: BLE001
+        return "?"

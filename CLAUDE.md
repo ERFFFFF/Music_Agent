@@ -63,8 +63,8 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 - **The CLI has NO third-party dependencies at all.** `requirements-cli.txt` is empty on purpose; `music_agent/cli.py` runs on the standard library. Verify with the site-packages sweep, not by eye:
   `python -c "import music_agent.cli, music_agent.win32.hotkeys, sys; print([m.__name__ for m in sys.modules.values() if 'site-packages' in (getattr(m,'__file__','') or '')])"` — only `_distutils_hack` / `pywin32_bootstrap` (injected by `.pth` files at interpreter startup) may appear.
 - **httpmin.py** — the HTTP layer, `urllib.request` in a `requests` shape. Both backends import it, so the GUI is dependency-free here too.
-- **win32/hotkeys.py** — Win32 `RegisterHotKey` + a message loop. The CLI's hotkeys.
-- **keyboard** — the TRAY app only. It survives because `ui/settings.py` **records** a combination as you press it, which needs a keyboard hook; `RegisterHotKey` cannot do that.
+- **win32/hotkeys.py** — Win32 `RegisterHotKey` + a message loop. **Both** front ends' hotkeys since 4.6 (the tray app used `keyboard` until then — see *Why the tray app does not use `keyboard` for hotkeys*).
+- **keyboard** — the TRAY app only, and for ONE job: `ui/settings.py` **records** a combination as you press it, which needs a keyboard hook. `RegisterHotKey` cannot do that, and nothing else here uses it.
 - **customtkinter / pystray / Pillow** — the tray app only (`requirements-gui.txt`). `music_agent/cli.py` imports none of them.
 - **ctypes** — Windows shell notifications, single-instance mutex, DPAPI, hotkeys
 - **PyInstaller** — pinned in `build_portable.ps1`, the only thing that uses it
@@ -207,6 +207,53 @@ Every `ctk.StringVar` passes an explicit `master=`. A masterless one attaches to
 **These five are the whole set.** `config.ACTIONS` is the single source: `DEFAULT_HOTKEYS`, `ENV_HOTKEYS`, both controllers and both front ends are all keyed off it, so a sixth action cannot exist half-way. Each is overridable from the `.env` as `HOTKEY_<ACTION_ID>` — `ENV_HOTKEYS` is *derived* from `ACTIONS`, so a new action is configurable the moment it is added.
 
 A `Ctrl+Alt+W` "Wake device" row lived here until 2026-08-11 and was **fiction** — no action, no binding, no handler, nothing in any file. It described a startup `transfer_playback` that an older build did unconditionally. `SpotifyController._device()` still does the equivalent (it activates an idle device before skipping), just not on a key press. Don't re-add the row without the code.
+
+## Why the tray app does not use `keyboard` for hotkeys
+
+Until 4.6 the tray app bound its five shortcuts with `keyboard.add_hotkey`, whose `WH_KEYBOARD_LL`
+hook loses them in three ways that are **permanent and completely silent**. All three were reproduced
+against keyboard 0.13.5's own dispatch code, not reasoned about:
+
+| Failure | Why |
+|---|---|
+| **A phantom key poisons the lookup** | The hotkey key is `tuple(sorted(_pressed_events))` — an exact match on the set of keys it believes are held (`keyboard/__init__.py:216`). A key-up missed while the UAC / Ctrl+Alt+Del secure desktop or the Win+L lock screen is up, or under an elevated window (UIPI does not deliver those to a non-elevated hook), leaves a phantom in that set **forever**. Nothing matches again. It never self-heals — only pressing that exact key again clears it. |
+| **A raising callback kills the dispatch thread** | Callbacks run from `pre_process_event`, which has no `try/except` — unlike `invoke_handlers` twenty lines away. One raise ends `GenericListener.process()`, the queue is never drained again, and every hotkey is dead until restart. |
+| **A slow callback DISCARDS later presses** | That single thread reads the pressed-key set at *dequeue* time, so a key pressed while a slow callback runs is matched after its keys are already released — dropped, not delayed. `cadence.TIMEOUT` is 25s, so one press at a sleeping server swallowed every press for the next 25 seconds. |
+
+`RegisterHotKey` has none of them: no hook, no key table, no dispatch thread of its own, no
+administrator rights. The trade is stated in `win32/hotkeys.py` — a combination another application
+already owns fails with 1409 instead of being stolen — and that failure is now **said**, in the log
+and in a balloon, instead of leaving a key that quietly does nothing.
+
+Two consequences worth knowing:
+
+- **Registration is per THREAD**, so `tray.setup_hotkeys()` runs the message loop on its own thread and
+  rebinding means ending that thread and starting a new one (`stop_hotkeys()` — and it must finish, or
+  the new thread clashes with the app's own old registrations).
+- **The 25s call still gets its own thread.** `tray._fire` logs the press and hands off immediately;
+  blocking the message loop would be the same bug in a new place.
+
+## What the log should say when a shortcut works
+
+The Logs tab in Settings (and `python -m music_agent -d`) shows the same buffer. A working press is:
+
+```
+hotkey pressed: next_track
+POST /api/remote/command -> 200 in 0.21s
+Cadence command sent: next
+next_track finished in 0.23s
+```
+
+- **no `hotkey pressed`** → the key never reached the app: another application owns the combination
+  (look for `did not register: already in use by another application` at startup), or the combination
+  is not what you think.
+- `hotkey pressed` then `NO TAB IS DRAINING (live=false)` → the Cadence tab is not performing commands.
+  Before Cadence's long-poll drain this also happened to a tab that was merely **backgrounded**, since
+  Chrome throttles a hidden, silent page's timers to one tick a minute.
+- `nothing to control — not signed in` → the controller failed to build; sign in from Settings.
+
+Those three lines exist because each was previously a balloon and nothing else, which is what made
+"my hotkeys stopped working" impossible to check.
 
 ## Building
 

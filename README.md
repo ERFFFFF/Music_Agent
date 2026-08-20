@@ -206,6 +206,25 @@ opened it, plus Copy and Clear. It is held **in memory only** — never written 
 the app exits — because a log file naming your server and your account is a support burden and a
 privacy question nobody asked for.
 
+#### A shortcut did nothing — what to look for
+
+A press that worked leaves four lines:
+
+```
+hotkey pressed: next_track
+POST /api/remote/command -> 200 in 0.21s
+Cadence command sent: next
+next_track finished in 0.23s
+```
+
+| What you see | What it means |
+|---|---|
+| all four | it worked — if nothing happened, the problem is in the browser tab |
+| **no `hotkey pressed`** | the key never reached the app. Look near the top of the log for `did not register: already in use by another application` — another program owns that combination, so pick different keys in Settings |
+| `NO TAB IS DRAINING (live=false)` | no Cadence tab is performing commands. Open one, or reload it |
+| `nothing to control — not signed in` | sign in again from Settings |
+| `Cadence session expired` | same — the saved session aged out |
+
 ### Behind a corporate proxy
 
 ```ini

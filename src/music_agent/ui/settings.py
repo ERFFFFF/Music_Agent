@@ -1,3 +1,4 @@
+import logging
 import threading
 import tkinter
 
@@ -8,8 +9,8 @@ from music_agent import log
 from music_agent import config as config_module
 
 from music_agent.backends.cadence import client_from_config
-from music_agent.config import load_config, save_config, find_icon, DEFAULT_HOTKEYS, MODES
-from music_agent.ui.widgets import secret_entry, set_enabled
+from music_agent.config import DEFAULT_HOTKEYS, MODES, find_icon, load_config, update_config
+from music_agent.ui.widgets import center, new_root, secret_entry, set_enabled
 
 _MODIFIERS = frozenset({
     "ctrl", "alt", "shift", "windows",
@@ -25,19 +26,41 @@ ACTION_LABELS = {
     "show_current": "Show Current Song",
 }
 
-# Prevent multiple settings windows
+# Prevent multiple settings windows. `_live_window` is the one that is up, so a second click can
+# RAISE it — "Settings does nothing" reads the same whether the window is missing or merely behind a
+# full-screen browser.
 _window_open = False
+_live_window = None
 _window_lock = threading.Lock()
 
 
 class SettingsWindow:
     def __init__(self, on_save_callback=None):
-        global _window_open
+        global _window_open, _live_window
+        # Before _live_window is published: another thread can ask this window to come forward the
+        # moment it is visible, which is before _build has run a line.
+        self._raise_wanted = threading.Event()
         with _window_lock:
             if _window_open:
+                logging.info("Settings is already open — raising it instead of opening a second one")
+                if _live_window is not None:
+                    _live_window.request_raise()
                 return
             _window_open = True
+            _live_window = self
+        # try/FINALLY, not try/except. The flag used to be a one-way latch cleared only by _on_close,
+        # so ONE failure on the way up — a corrupt icon, a Tcl error, a font, DPI scaling — disabled
+        # Settings for the rest of the session, and the traceback went to a stderr that does not
+        # exist in the --noconsole build. open_settings() at the bottom logs whatever escapes.
+        try:
+            self._build(on_save_callback)
+        finally:
+            with _window_lock:
+                _window_open = False
+                if _live_window is self:
+                    _live_window = None
 
+    def _build(self, on_save_callback=None):
         self.on_save_callback = on_save_callback
         self.config = load_config()
         self.hotkey_vars = {}
@@ -48,9 +71,9 @@ class SettingsWindow:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.root = ctk.CTk()
-        self.root.title("Music Agent \u2014 Settings")
-        self.root.resizable(False, False)
+        # Same root builder as the three setup windows: Tk callback exceptions into the log, CTkFont
+        # pointed at THIS root, and placement by the requested size. See ui/widgets.new_root.
+        self.root = new_root("Music Agent \u2014 Settings")
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Window icon
@@ -63,15 +86,36 @@ class SettingsWindow:
 
         self._build_ui()
 
-        # Center window on screen
-        self.root.update_idletasks()
-        w = self.root.winfo_width()
-        h = self.root.winfo_height()
-        x = (self.root.winfo_screenwidth() // 2) - (w // 2)
-        y = (self.root.winfo_screenheight() // 2) - (h // 2)
-        self.root.geometry(f"+{x}+{y}")
+        center(self.root)                        # places it AND lifts it once mainloop has mapped it
+        self.root.after(300, self._poll_raise)   # ...and keeps honouring a raise from the tray menu
 
         self.root.mainloop()
+        logging.info("Settings window closed")
+
+    def request_raise(self):
+        """Ask the window to come forward. Safe from ANY thread — the tray menu runs on pystray's — so
+        it only sets a flag; the window's own thread does the Tk work."""
+        self._raise_wanted.set()
+
+    def _poll_raise(self):
+        """Owning thread: honour a request_raise() from elsewhere, ~3x/s. Cheap, and it means no other
+        thread ever touches a widget — Tcl is not reentrant across threads, and the crash that causes
+        is exactly the kind that left Settings unopenable for the rest of the session."""
+        if self._raise_wanted.is_set():
+            self._raise_wanted.clear()
+            try:
+                self.root.deiconify()
+                self.root.attributes("-topmost", True)
+                # Set and released, so it comes forward once instead of hovering over everything.
+                self.root.after(200, lambda: self.root.attributes("-topmost", False))
+                self.root.lift()
+                self.root.focus_force()
+            except Exception as e:  # noqa: BLE001 — a window mid-destroy must not take the app down
+                logging.warning("could not raise the Settings window: %s", e)
+        try:
+            self.root.after(300, self._poll_raise)
+        except Exception:  # noqa: BLE001 — destroyed; stop rescheduling
+            pass
 
     def _build_ui(self):
         # Two tabs, because the Logs page is a different job from the settings and does not want to
@@ -559,7 +603,12 @@ class SettingsWindow:
         self._capture_hook = None
 
         def on_key(event):
-            name = event.name.lower()
+            # event.name is None for a key with no mapping, and .lower() on it raised INSIDE the
+            # Windows low-level hook procedure, where the library swallows it and the key is then not
+            # suppressed after all.
+            name = (event.name or "").lower()
+            if not name:
+                return
             # Ignore bare modifier presses — wait for a real key
             if name in _MODIFIERS:
                 return
@@ -647,20 +696,28 @@ class SettingsWindow:
                 return
             seen[hk] = aid
 
-        self.config["hotkeys"] = new_hotkeys
-        self.config["mode"] = self.mode_var.get()
-        for field, var in self.proxy_vars.items():
-            # Not the password: trimming a credential is how you get an auth failure nobody can
-            # explain, and config._read_env already refuses to do it to a .env password for the same
-            # reason. The address and the username are trimmed, where a stray space is always a slip.
-            self.config[field] = var.get() if field == "proxy_password" else var.get().strip()
-        self.config["proxy_auth"] = "current-user" if self.proxy_auth_var.get() == "on" else ""
+        # Field by field through update_config, NOT save_config(self.config). self.config was read when
+        # this window opened; a Cadence cookie or a Spotify refresh token rotates while it sits open,
+        # and writing the whole captured dict back puts the stale one on disk — which signs the user
+        # out on the next launch. config.update_config's own docstring records this happening in the
+        # other direction already ("one cookie rotation put an old hotkey back on disk"); Settings is
+        # the window most likely to be left open for an hour, so it writes only the fields it OWNS.
+        fields = {"hotkeys": new_hotkeys, "mode": self.mode_var.get(),
+                  # Not the password: trimming a credential is how you get an auth failure nobody can
+                  # explain, and config._read_env already refuses to do it to a .env password for the
+                  # same reason. The address and the username are trimmed, where a stray space is
+                  # always a slip.
+                  **{f: (v.get() if f == "proxy_password" else v.get().strip())
+                     for f, v in self.proxy_vars.items()},
+                  "proxy_auth": "current-user" if self.proxy_auth_var.get() == "on" else ""}
         try:
-            save_config(self.config)
+            latest = None
+            for field, value in fields.items():
+                latest = update_config(field, value, self.config)
             # Apply immediately rather than at the next launch: someone who just typed a proxy in is
             # about to press Sign in, and doing that through the old (absent) proxy would tell them
             # the address is wrong when it is the timing that is.
-            config_module.apply_proxy(load_config())
+            config_module.apply_proxy(latest or load_config())
         except OSError:
             error_dialog = ctk.CTkToplevel(self.root)
             error_dialog.title("Save Error")
@@ -690,16 +747,18 @@ class SettingsWindow:
                 self.hotkey_vars[action_id].set(default)
 
     def _on_close(self):
-        global _window_open
+        # The flag is cleared in __init__'s finally, once mainloop has actually returned — clearing it
+        # here let a second click build a window while this one was still tearing down.
         self._capture_cancelled = True
         self._unhook_capture()
-        with _window_lock:
-            _window_open = False
         self.root.destroy()
 
 
 def open_settings(on_save_callback=None):
     """Open settings window in a new thread. Safe to call from any thread."""
     def run():
-        SettingsWindow(on_save_callback=on_save_callback)
-    threading.Thread(target=run, daemon=True).start()
+        try:
+            SettingsWindow(on_save_callback=on_save_callback)
+        except BaseException:                        # a daemon thread's traceback goes nowhere in
+            logging.exception("Settings thread died")   # a --noconsole build unless we write it down
+    threading.Thread(target=run, daemon=True, name="settings-window").start()

@@ -55,3 +55,29 @@ def test_hotkeys():
     # ...and it unregistered on the way out, so the next run can bind the same combination
     assert user32.RegisterHotKey(None, 9004, mods, key), "listen leaked its registration on exit"
     user32.UnregisterHotKey(None, 9004)
+
+    # `stop` is how the TRAY app rebinds. RegisterHotKey registers for the calling THREAD, so changing
+    # a shortcut means ending this loop and starting a new one — and if the loop did not release its
+    # registrations on the way out, the new thread would clash with the app's own old ones and report
+    # every key as "already in use by another application".
+    stop, ready = threading.Event(), threading.Event()
+    result = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            listen({"ctrl+alt+shift+f24": lambda: None}, poll_ms=50, stop=stop, ready=ready)),
+        daemon=True)
+    thread.start()
+    assert ready.wait(5), "ready must be set once registration is done, not when the loop ends"
+    assert user32.RegisterHotKey(None, 9005, mods, key) == 0, "it should be held while listening"
+    stop.set()
+    thread.join(5)
+    assert not thread.is_alive(), "stop did not end the loop"
+    assert result == [1], result
+    assert user32.RegisterHotKey(None, 9006, mods, key), "stopping must release the registration"
+    user32.UnregisterHotKey(None, 9006)
+
+    # ready is set even when NOTHING bound, or a caller waiting on it would block for its full timeout
+    # every time a combination clashed.
+    ready2 = threading.Event()
+    assert listen({"ctrl+nonsense": lambda: None}, ready=ready2, on_error=lambda c, m: None) == 0
+    assert ready2.is_set()

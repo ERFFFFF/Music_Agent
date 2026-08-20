@@ -15,6 +15,7 @@ the hotkey/tray layer in ui/tray.py is the Windows-only part.
 """
 
 import logging
+import time
 from urllib.parse import urlsplit
 
 from music_agent.net import httpmin
@@ -132,10 +133,15 @@ class CadenceClient:
         # needs it once (`/api/login`). This mirrors the browser client's axios baseURL="/api" exactly;
         # getting it wrong is a 404 on every call, and it is the single most common bug in this codebase.
         url = f"{self.base_url}/api{path}"
+        started = time.monotonic()
         try:
             r = self.session.request(method, url, timeout=TIMEOUT, **kw)
         except httpmin.RequestError as e:
+            logging.error("%s %s failed after %.1fs: %s", method, path, time.monotonic() - started, e)
             raise CadenceError(f"Can't reach Cadence at {self.base_url}: {e}") from e
+        # Every call, with its timing. A hotkey that "does nothing" is usually a 25s wait on a sleeping
+        # server or a 401, and neither of those used to leave a single line behind.
+        logging.info("%s %s -> %s in %.2fs", method, path, r.status_code, time.monotonic() - started)
         # A 302 to the Access login page, which the client follows into a 200 of HTML — see
         # _blocked_by_access, which catches it whether or not redirects were followed.
         if _blocked_by_access(r):
@@ -274,6 +280,13 @@ class CadenceController:
         if not live:
             # Queued but nothing is there to perform it. Saying so beats a key that does nothing —
             # and it is a failure, not a quiet success: the command WILL expire unperformed.
+            #
+            # It has to be said IN THE LOG too. This was the one outcome that produced a balloon and
+            # nothing else, so "my hotkeys stopped working" could not be checked against anything. A
+            # tab that is open but BACKGROUNDED lands here as well whenever Cadence is older than the
+            # long-poll drain: Chrome throttles a hidden, silent page's timers to one tick a minute.
+            logging.warning("Cadence %s queued but NO TAB IS DRAINING (live=false) — it will expire "
+                            "unperformed", cmd)
             return self._fail("No Cadence tab is open — open Cadence in your browser to control playback.")
         logging.info(f"Cadence command sent: {cmd}")
         return ok_message

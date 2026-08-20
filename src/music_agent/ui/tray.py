@@ -23,7 +23,6 @@ import sys
 import threading
 import time
 
-import keyboard
 import pystray
 from PIL import Image
 
@@ -33,6 +32,7 @@ from music_agent.config import (ACTIONS, appdata_dir, find_icon, is_configured, 
                     save_config)
 from music_agent.ui import login
 from music_agent.ui.settings import open_settings
+from music_agent.win32 import hotkeys
 
 # this string is your “AppUserModelID”
 MY_APP_ID = "com.erfffff.musicagent"
@@ -213,43 +213,118 @@ def build_controller(cfg, setup=True):
         return None
 
 
-def action(name):
-    """Bind one controller method to a hotkey. Wrapped because this runs on the keyboard thread, where
-    an uncaught exception kills that hotkey silently and permanently."""
-    def run():
-        if controller is None:
-            notify("Not signed in — open Settings to choose an account.")
-            return
-        try:
-            message = getattr(controller, name)()
-        except Exception as e:  # noqa: BLE001 — a hotkey must never die on an unexpected error
-            logging.error(f"{name} failed: {e}", exc_info=True)
-            notify("Something went wrong — see the log.")
-            return
-        if message:
-            notify(message, title="Now Playing" if name == "show_current" else "Music Agent")
-    return run
+def perform(action_id):
+    """Run one action, on a thread of its own (see _fire). Every outcome is logged: this is the app
+    answering "did my shortcut work?", and until now the two most common answers — "no controller" and
+    "no Cadence tab was listening" — produced a balloon and not one line anywhere."""
+    name = ACTIONS[action_id]
+    if controller is None:
+        logging.warning("%s ignored: nothing to control — not signed in", action_id)
+        notify("Not signed in — open Settings to choose an account.")
+        return
+    started = time.monotonic()
+    try:
+        message = getattr(controller, name)()
+    except Exception as e:  # an action must never die on an unexpected error
+        logging.error("%s failed: %s", action_id, e, exc_info=True)
+        notify("Something went wrong — see the log.")
+        return
+    logging.info("%s finished in %.2fs", action_id, time.monotonic() - started)
+    if message:
+        notify(message, title="Now Playing" if name == "show_current" else "Music Agent")
 
 
-HOTKEY_ACTIONS = {action_id: action(method) for action_id, method in ACTIONS.items()}
+def _fire(action_id):
+    """What the hotkey itself does: say so, then hand off.
+
+    The handoff is the point. A Cadence call is allowed 25 seconds (it has to cover a Sablier wake),
+    and whatever thread dispatches hotkeys can do nothing else while that runs — with the old
+    `keyboard` hook that meant every key pressed during the wait was silently DISCARDED, and here it
+    would stall the message loop. One short-lived thread per press costs nothing and keeps the loop
+    free.
+    """
+    logging.info("hotkey pressed: %s", action_id)
+    threading.Thread(target=perform, args=(action_id,), daemon=True, name=f"action-{action_id}").start()
+
+
+# The hotkey thread, and the Event that ends it. Rebinding means ending the loop and starting a new
+# one, because RegisterHotKey registers for the THREAD that calls it.
+_hotkey_thread = None
+_hotkey_stop = None
 
 
 def setup_hotkeys():
-    """Register global hotkeys from current config."""
-    for action_id, func in HOTKEY_ACTIONS.items():
-        hotkey_str = app_config["hotkeys"].get(action_id)
-        if hotkey_str:
-            try:
-                keyboard.add_hotkey(hotkey_str, func)
-            except Exception as e:
-                logging.error(f"Failed to register hotkey '{hotkey_str}' for {action_id}: {e}")
-    logging.info("Hotkeys registered: %s", app_config["hotkeys"])
+    """Register the configured global hotkeys, through Windows itself.
+
+    `win32/hotkeys.py` (RegisterHotKey + a message loop) is what the CLI has used since 4.2; the tray
+    app kept `keyboard`, whose WH_KEYBOARD_LL hook loses hotkeys in three ways that are all permanent
+    and all completely silent — measured against keyboard 0.13.5's own dispatch code:
+
+      * It looks a hotkey up by `tuple(sorted(_pressed_events))`, an exact match on the set of keys it
+        believes are held. A key-up missed while the UAC/Ctrl+Alt+Del secure desktop or the Win+L lock
+        screen is up — or under an elevated window, which UIPI does not deliver to a non-elevated
+        hook — leaves a phantom in that set FOREVER. Nothing matches again, and nothing is logged. It
+        never self-heals.
+      * Callbacks are invoked from `pre_process_event`, which has no try/except (unlike
+        `invoke_handlers` twenty lines away). One raise ends the single queue-draining thread and
+        every hotkey is dead until restart.
+      * That thread reads the pressed-key set at DEQUEUE time, so a key pressed while a slow callback
+        runs is matched after its keys are already released, and dropped — not delayed.
+
+    RegisterHotKey has none of those: no hook, no key table, no dispatch thread of its own, and no
+    administrator rights. The trade is that a combination already owned by another application fails
+    with 1409 instead of being stolen — which is now SAID, in the log and in a balloon, rather than
+    leaving a key that silently does nothing.
+
+    `keyboard` stays a dependency for one job only: Settings RECORDS a combination as you press it,
+    and RegisterHotKey cannot do that.
+    """
+    global _hotkey_thread, _hotkey_stop
+    stop_hotkeys()
+
+    bindings, clashes = {}, []
+    for action_id in ACTIONS:
+        combo = (app_config["hotkeys"].get(action_id) or "").strip()
+        if not combo:
+            logging.warning("hotkey %s is not bound to anything", action_id)
+            continue
+        # One dict keyed by COMBINATION, so two actions on the same keys can't silently shadow each
+        # other — the second registration would fail with 1409 and be reported as a clash.
+        bindings[combo] = lambda a=action_id: _fire(a)
+
+    def on_error(combo, message):
+        clashes.append(combo)
+        logging.error("hotkey %r did not register: %s", combo, message)
+
+    ready = threading.Event()
+    _hotkey_stop = threading.Event()
+    _hotkey_thread = threading.Thread(
+        target=lambda: hotkeys.listen(bindings, on_error=on_error, stop=_hotkey_stop, ready=ready),
+        daemon=True, name="hotkeys")
+    _hotkey_thread.start()
+    ready.wait(5)
+    bound = len(bindings) - len(clashes)
+    logging.info("hotkeys registered with Windows: %d/%d %s", bound, len(bindings), sorted(bindings))
+    if clashes:
+        notify("Another app already uses " + ", ".join(sorted(clashes)) +
+               " — pick different keys in Settings.")
+
+
+def stop_hotkeys():
+    """End the hotkey thread and release its registrations. Returns once it has actually gone."""
+    global _hotkey_thread, _hotkey_stop
+    if _hotkey_stop is not None:
+        _hotkey_stop.set()
+    if _hotkey_thread is not None:
+        # Slightly longer than win32.hotkeys' 250ms slice: the loop checks `stop` once per slice, and
+        # leaving before UnregisterHotKey has run would make the next bind clash with ourselves.
+        _hotkey_thread.join(2)
+    _hotkey_thread = _hotkey_stop = None
 
 
 def reload_config():
     """Settings saved: re-register hotkeys, and rebuild the controller if the account/mode changed."""
     global app_config, controller
-    keyboard.unhook_all_hotkeys()
     previous = app_config
     app_config = load_config()
     setup_hotkeys()
@@ -326,11 +401,7 @@ def main():
         logging.info("Setup cancelled — nothing to control, exiting.")
         sys.exit(0)
 
-    setup_hotkeys()
-
-    # Run keyboard listener on a daemon thread
-    kb_thread = threading.Thread(target=keyboard.wait, daemon=True)
-    kb_thread.start()
+    setup_hotkeys()   # starts its own thread, which is where the message loop has to live
 
     # Run tray icon on main thread (blocks until Quit)
     tray_icon = icon = create_tray_icon()
@@ -338,7 +409,7 @@ def main():
     icon.run()
 
     # Cleanup after icon.stop()
-    keyboard.unhook_all_hotkeys()
+    stop_hotkeys()
     logging.info("Music Agent shut down.")
 
 
