@@ -77,9 +77,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.which.outputs.tag }}
-        # --clobber so a re-run replaces the assets instead of failing on "already exists".
         shell: pwsh
-        run: gh release upload "$env:TAG" dist\MusicAgent_portable.exe installer_output\MusicAgentSetup.exe --clobber
+        run: |
+          # A tag can be pushed before its release is written, and `gh release upload` needs one to
+          # exist — that failed a build whose binaries were already sitting right there. Open a DRAFT
+          # if there is none, so the artifacts always land somewhere and a human still writes the
+          # notes; a real release that already exists is left exactly as it is.
+          gh release view "$env:TAG" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:TAG" --draft --title "$env:TAG" --notes "Binaries built by CI. Notes not written yet."
+          }
+          # --clobber so a re-run replaces the assets instead of failing on "already exists".
+          gh release upload "$env:TAG" dist\MusicAgent_portable.exe installer_output\MusicAgentSetup.exe --clobber
 
       # Kept for a build that was NOT for a release (a dispatch against a tag whose release was
       # deleted, say) — the upload above would fail there, and the binaries would otherwise be lost.
