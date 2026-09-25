@@ -133,6 +133,8 @@ class _Auth:
                 # the app kills one sooner. That is a SCHEDULED event, not a fault — so drop the dead
                 # token (and the copy in the config) and fall through to consent. Without this the app
                 # would fail identically forever with no route back except editing the config by hand.
+                # Logs Spotify's error_description (e.g. "Refresh token revoked"), never the token.
+                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                 logging.info("Spotify refresh token is no longer valid (%s) — re-authorising.", e)
                 self.refresh_token = ""
                 if self.on_token:

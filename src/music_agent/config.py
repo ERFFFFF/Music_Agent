@@ -369,6 +369,8 @@ def _encrypt(value):
         return value
     blob = _dpapi(True, value.encode("utf-8"))
     if blob is None:
+        # Logs the config FILENAME; no credential value reaches this line.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logging.warning("DPAPI unavailable — credentials in %s are NOT encrypted.", CONFIG_FILENAME)
         return value
     return ENC_PREFIX + base64.b64encode(blob).decode("ascii")
