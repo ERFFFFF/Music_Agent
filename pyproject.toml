@@ -26,7 +26,7 @@ gui = [
     "keyboard==0.13.5",
 ]
 # Test runner only. Never imported by the app -- the runtime dependency list above stays empty.
-dev = ["pytest>=8", "ruff>=0.6"]   # ruff is configured below; it belongs where pip can find it
+dev = ["pytest>=8", "ruff==0.16.9"]   # exact: ruff 0.16.0 changed the default rule set; configured below
 
 [project.scripts]
 music-agent = "music_agent.cli:main"
@@ -53,3 +53,7 @@ addopts = "-q"
 [tool.ruff]
 line-length = 108              # the width this codebase is already written and commented at
 target-version = "py310"
+
+[tool.ruff.lint]
+# the pre-0.16 default set this code is written against (0.16 widened it to 413 rules)
+select = ["E4", "E7", "E9", "F"]

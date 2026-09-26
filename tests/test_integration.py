@@ -13,7 +13,6 @@ import builtins
 import json
 import os
 import symtable
-import sys
 import tempfile
 import threading
 import time

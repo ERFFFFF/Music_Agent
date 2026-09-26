@@ -1,5 +1,9 @@
 """Checks for `music_agent.config` — moved here from the module's own selftest()."""
 
+import sys
+
+import pytest
+
 from music_agent.config import *  # noqa: F401,F403 — the public surface under test
 from music_agent.config import (  # noqa: F401 — including the private names it exercises
     ACTIONS, CONFIG_FILENAME, DEFAULTS, DEFAULT_HOTKEYS, ENC_PREFIX, ENV_FILENAME, ENV_HOTKEYS, ENV_PROXY_KEYS, SECRET_FIELDS, app_dir, apply_proxy, base64, config_path, env_config, env_path, is_configured, json, load_config, os, proxy_url, redact_url, save_config, save_spotify_credentials, urllib)
@@ -276,6 +280,7 @@ def test_a_cli_run_with_a_dotenv_does_not_wipe_the_guis_stored_account():
         config.use_env(True)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI sealing is Windows-only")
 def test_a_proxy_address_with_credentials_in_it_is_sealed_and_redacted():
     """`http://user:pass@proxy:8080` is an ordinary thing to paste into an address box, and it was
     the last place a credential could sit in the clear on disk."""

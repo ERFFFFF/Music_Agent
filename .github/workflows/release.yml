@@ -43,18 +43,22 @@ jobs:
           if ($tag -notmatch '^v[0-9][0-9A-Za-z.\-+]*$') { throw "not a version tag: '$tag'" }
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: refs/tags/${{ steps.which.outputs.tag }}
+          # nothing after this runs git; gh reads GH_TOKEN
+          persist-credentials: false
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           # >=3.10 from the app, <3.16 from PyInstaller (see requirements-gui.txt). Pinned rather than
           # "3.x" so a new interpreter cannot silently change what ships.
           python-version: "3.12"
 
       - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+        # 6.7.1 is what built v4.6.1 and what windows-latest preinstalls; without --allow-downgrade
+        # choco exits 1 once the image ships a newer build.
+        run: choco install innosetup --version 6.7.1 --allow-downgrade -y --no-progress
 
       # The installer FIRST: build_installer.ps1 starts by deleting dist\, so building it after the
       # portable exe would throw that exe away.
@@ -94,7 +98,7 @@ jobs:
 
       # Kept for a build that was NOT for a release (a dispatch against a tag whose release was
       # deleted, say) — the upload above would fail there, and the binaries would otherwise be lost.
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: always()
         with:
           name: MusicAgent-windows

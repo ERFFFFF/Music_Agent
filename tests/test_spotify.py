@@ -3,7 +3,6 @@
 from music_agent.backends.spotify import *  # noqa: F401,F403 — the public surface under test
 from music_agent.backends.spotify import (  # noqa: F401 — including the private names it exercises
     API, SpotifyConfigError, SpotifyController, SpotifyError, _Auth, httpmin, time)
-import music_agent.backends.spotify as MODULE
 
 
 def test_spotify():

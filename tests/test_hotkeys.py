@@ -3,7 +3,6 @@
 from music_agent.win32.hotkeys import *  # noqa: F401,F403 — the public surface under test
 from music_agent.win32.hotkeys import (  # noqa: F401 — including the private names it exercises
     ERROR_HOTKEY_ALREADY_REGISTERED, MOD_NOREPEAT, ctypes, listen, parse)
-import music_agent.win32.hotkeys as MODULE
 
 
 def test_hotkeys():

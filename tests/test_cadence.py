@@ -3,7 +3,6 @@
 from music_agent.backends.cadence import *  # noqa: F401,F403 — the public surface under test
 from music_agent.backends.cadence import (  # noqa: F401 — including the private names it exercises
     CadenceClient, CadenceController, CadenceError, _blocked_by_access, normalize_url)
-import music_agent.backends.cadence as MODULE
 
 
 def test_cadence():
@@ -74,7 +73,7 @@ def test_cadence():
     playing, paused = FakeClient(paused=False), FakeClient(paused=True)
     assert CadenceController(playing).pause() is None and playing.sent == ["play_pause"]
     assert CadenceController(paused).pause() is None and paused.sent == [], "already paused: send nothing"
-    playing.sent.clear(); paused.sent.clear()
+    playing.sent.clear(); paused.sent.clear()  # noqa: E702
     assert CadenceController(paused).resume() is None and paused.sent == ["play_pause"]
     assert CadenceController(playing).resume() is None and playing.sent == []
     silent = FakeClient(paused=True, track=False)
@@ -83,7 +82,7 @@ def test_cadence():
     saved = []
     c2 = CadenceClient(base_url="https://cadence.example", on_session=saved.append)
     c2.session.cookies.set("session", "abc", domain="cadence.example", path="/")
-    c2._save_cookie(); c2._save_cookie()          # only a CHANGE is worth a disk write
+    c2._save_cookie(); c2._save_cookie()          # noqa: E702 — only a CHANGE is worth a disk write
     assert saved == ["abc"], saved
     c2.forget()
     assert saved == ["abc", ""] and c2._cookie() is None, "sign-out must clear here and upstream"

@@ -3,7 +3,6 @@
 from music_agent.net.httpmin import *  # noqa: F401,F403 — the public surface under test
 from music_agent.net.httpmin import (  # noqa: F401 — including the private names it exercises
     RequestError, Session, _json, post, request)
-import music_agent.net.httpmin as MODULE
 
 
 def test_httpmin():
