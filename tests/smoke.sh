@@ -391,8 +391,8 @@ bad += [f"pyproject.toml: removed [{m.strip()[:60]}]" for m in rm
 bad += [f"pyproject.toml: added [{a.strip()[:60]}]" for a in add
         if not re.fullmatch(r'dev = \[.*|\[tool\.ruff\.lint\]|select = \[.*\]|\s*#.*|    "Pillow==13\.0\.0",|', a)]
 rm, add = d.get("requirements-gui.txt", ([], []))            # the pin and comments, nothing else
-bad += [f"requirements-gui.txt: {k} [{x.strip()[:60]}]" for k, xs in (("removed", rm), ("added", add))
-        for x in xs if not re.fullmatch(r"#.*|Pillow==1[23]\.\d+\.\d+", x)]
+bad += [f"requirements-gui.txt: {k} [{x.strip()[:60]}]" for k, xs, pin in (("removed", rm, r"Pillow==12\.3\.0"), ("added", add, r"Pillow==13\.0\.0"))
+        for x in xs if not re.fullmatch(r"#.*|" + pin, x)]
 rm, add = d.get("CLAUDE.md", ([], []))                       # the one Python-version line
 if len(rm) > 1 or len(add) > 1 or any("Python >=3.10,<3.16" not in x for x in rm + add):
     bad.append(f"CLAUDE.md: {len(rm)} removed / {len(add)} added lines, want only the Python-version line")
