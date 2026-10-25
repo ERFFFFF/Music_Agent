@@ -59,7 +59,7 @@ The one genuinely unrecoverable thing is `spotify_refresh_token`: it is *earned*
 
 ## Tech Stack
 
-- **Python >=3.10,<3.16** on Windows 10+
+- **Python >=3.10,<3.16** on Windows 10+ (the tray app needs **>=3.11**: Pillow 13 dropped 3.10)
 - **The CLI has NO third-party dependencies at all.** `requirements-cli.txt` is empty on purpose; `music_agent/cli.py` runs on the standard library. Verify with the site-packages sweep, not by eye:
   `python -c "import music_agent.cli, music_agent.win32.hotkeys, sys; print([m.__name__ for m in sys.modules.values() if 'site-packages' in (getattr(m,'__file__','') or '')])"` — only `_distutils_hack` / `pywin32_bootstrap` (injected by `.pth` files at interpreter startup) may appear.
 - **httpmin.py** — the HTTP layer, `urllib.request` in a `requests` shape. Both backends import it, so the GUI is dependency-free here too.

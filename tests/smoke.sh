@@ -348,13 +348,13 @@ SKIPIF='@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI sealing is Wi
 t23() {  # only the allowlisted files changed, src/ by comment lines only, and every test/pyproject edit
          # is one of the lint-hygiene or DPAPI-guard edits below (not, say, a weakened assert)
   local files extra src out allow=(-e "$WF" -e src/music_agent/backends/spotify.py -e src/music_agent/config.py
-        -e tests/smoke.sh -e pyproject.toml -e tests/test_config.py) f
+        -e tests/smoke.sh -e pyproject.toml -e tests/test_config.py -e requirements-gui.txt -e CLAUDE.md) f
   for f in "${LINT[@]}"; do allow+=(-e "$f"); done
   files=$({ git -C "$RC" diff --name-only "$BASE"; git -C "$RC" ls-files --others --exclude-standard; } | sort -u)
   extra=$(grep -vxF "${allow[@]}" <<<"$files" | grep .)
   src=$(git -C "$RC" diff "$BASE" -- src/ | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' | grep -vE '^\+\s*(#.*)?$')
   [[ -z "$extra" && -z "$src" ]] || { echo "outside scope: [$(echo $extra)]; non-comment src lines: $(grep -c . <<<"$src")"; return 1; }
-  git -C "$RC" diff -U0 "$BASE" -- "${LINT[@]}" tests/test_config.py pyproject.toml >"$W/t23.diff" 2>/dev/null || {
+  git -C "$RC" diff -U0 "$BASE" -- "${LINT[@]}" tests/test_config.py pyproject.toml requirements-gui.txt CLAUDE.md >"$W/t23.diff" 2>/dev/null || {
     echo "git diff failed"; return 1; }
   out=$(SKIPIF="$SKIPIF" python3 - "$W/t23.diff" 2>&1 <<'EOF'
 import os, re, sys
@@ -366,7 +366,8 @@ for l in open(sys.argv[1]).read().splitlines():
         hunk = True
     elif hunk and l[:1] in "+-":
         d[cur][l[0] == "+"].append(l[1:])
-bad, lint = [], [f for f in d if f not in ("tests/test_config.py", "pyproject.toml")]
+DOCS = ("requirements-gui.txt", "CLAUDE.md")             # 2026-10-25: the Pillow 12.3.0 -> 13.0.0 bump
+bad, lint = [], [f for f in d if f not in ("tests/test_config.py", "pyproject.toml") + DOCS]
 dead = re.compile(r"import music_agent\.[a-z0-9_.]+ as MODULE|import sys|from music_agent import log")
 for f in lint:
     pool = list(d[f][0])
@@ -385,9 +386,16 @@ bad += [f"test_config.py: removed [{m.strip()[:60]}]" for m in rm]
 bad += [f"test_config.py: added [{a.strip()[:60]}]" for a in add
         if a not in ("import sys", "import pytest", "", os.environ["SKIPIF"])]
 rm, add = d.get("pyproject.toml", ([], []))
-bad += [f"pyproject.toml: removed [{m.strip()[:60]}]" for m in rm if not m.startswith("dev = [")]
+bad += [f"pyproject.toml: removed [{m.strip()[:60]}]" for m in rm
+        if not (m.startswith("dev = [") or m == '    "Pillow==12.3.0",')]
 bad += [f"pyproject.toml: added [{a.strip()[:60]}]" for a in add
-        if not re.fullmatch(r"dev = \[.*|\[tool\.ruff\.lint\]|select = \[.*\]|\s*#.*|", a)]
+        if not re.fullmatch(r'dev = \[.*|\[tool\.ruff\.lint\]|select = \[.*\]|\s*#.*|    "Pillow==13\.0\.0",|', a)]
+rm, add = d.get("requirements-gui.txt", ([], []))            # the pin and comments, nothing else
+bad += [f"requirements-gui.txt: {k} [{x.strip()[:60]}]" for k, xs in (("removed", rm), ("added", add))
+        for x in xs if not re.fullmatch(r"#.*|Pillow==1[23]\.\d+\.\d+", x)]
+rm, add = d.get("CLAUDE.md", ([], []))                       # the one Python-version line
+if len(rm) > 1 or len(add) > 1 or any("Python >=3.10,<3.16" not in x for x in rm + add):
+    bad.append(f"CLAUDE.md: {len(rm)} removed / {len(add)} added lines, want only the Python-version line")
 print("ok" if not bad else "; ".join(bad))
 EOF
 )

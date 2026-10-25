@@ -2,11 +2,12 @@
 # what lets it skip them entirely — see requirements-cli.txt, which is empty.
 #
 # Pinned exactly so a build today and a build in a year produce the same app.
-# Needs Python >=3.10,<3.16 (ceiling from PyInstaller).
+# Needs Python >=3.11,<3.16 (floor from Pillow 13, which dropped 3.10; ceiling from PyInstaller).
+# The CLI alone still runs on 3.10 (requirements-cli.txt is empty).
 
 customtkinter==6.0.0
 pystray==0.19.5
-Pillow==12.3.0
+Pillow==13.0.0
 
 # Global hotkeys for the TRAY app only. The CLI uses win32/hotkeys.py (Win32 RegisterHotKey) instead;
 # the tray app still needs this one because ui/settings.py RECORDS a combination as you press it,
